@@ -209,3 +209,232 @@ JWT verification needs `python-jose` to decode the token and validate the signat
 
 ---
 
+## Backend: Configuration Management
+
+### apps/api/core/config.py
+- Centralizes environment variable loading using Pydantic Settings for type safety.
+- Loads Supabase URL, service role key, and JWT secret from `.env` file.
+- Key concepts: Pydantic BaseSettings, environment variable validation, singleton pattern.
+- Ensures configuration errors fail at startup rather than during request handling.
+
+---
+
+## Backend: JWT Authentication Dependency
+
+### apps/api/deps/auth.py
+- Extracts and verifies Supabase JWT tokens from Authorization headers on protected routes.
+- Validates token signature using python-jose and returns user_id and email from payload.
+- Key concepts: FastAPI dependencies, JWT validation, Bearer token parsing, HTTPException for auth errors.
+- Centralizes authentication logic so route handlers receive trusted user context.
+
+---
+
+## Backend: Health Check Routers
+
+### apps/api/routers/health.py
+- Provides public `/health` endpoint for infrastructure monitoring (no auth required).
+- Provides protected `/health-auth` endpoint that returns authenticated user info from JWT.
+- Key concepts: FastAPI APIRouter, route handlers with @router.get decorator, Depends() injection.
+- Demonstrates how protected routes use get_current_user dependency to enforce authentication.
+
+---
+
+## Backend: Main FastAPI Application
+
+### apps/api/main.py
+- Initializes the FastAPI app instance and configures CORS middleware for frontend communication.
+- Registers health router and provides root endpoint with API information.
+- Key concepts: FastAPI app initialization, CORS configuration, router inclusion, ASGI entry point.
+- Serves as the application entry point that uvicorn loads when starting the server.
+
+---
+
+## Step 3: Login Page with Supabase Auth
+
+### What changed
+Created `app/login/page.tsx` - full login form with email/password authentication
+
+### Why
+Users need a way to sign into existing accounts. The login page authenticates with Supabase, manages loading/error states, and redirects on success.
+
+### How it works
+1. **Controlled inputs**: `value={email}` + `onChange={setEmail}` keeps React state synced with input fields
+2. **Form submission**: `handleSubmit` prevents default refresh, calls `supabase.auth.signInWithPassword()`
+3. **Loading state**: Button disabled while authenticating to prevent double-submission
+4. **Error handling**: If `authError` exists, extract `.message` and show to user
+5. **Success redirect**: If no error, `router.push('/')` navigates to home page
+6. **Destructuring rename**: `{error: authError}` avoids conflict with state variable `error`
+
+### Key concept
+**Controlled components** - React state is the "single source of truth" for input values. Every keystroke updates state, state updates the input. This differs from uncontrolled inputs where the DOM holds the value.
+
+### Interview explanation
+"I built a login form using Supabase's `signInWithPassword` method. The form uses controlled inputs where React state manages the input values. I added loading state to disable the button during authentication and error state to display validation messages. On successful login, I use Next.js's `useRouter` to redirect to the home page."
+
+### Gotcha
+**Variable shadowing with destructuring** - `const {error} = await supabase.auth...` conflicts with `const [error, setError] = useState()`. You must rename during destructuring: `const {error: authError}` to avoid bugs where the wrong variable is referenced.
+
+---
+
+## Step 4: Signup Page with Supabase Auth
+
+### What changed
+Created `app/signup/page.tsx` - registration form for new user accounts
+
+### Why
+New users need a way to create accounts. Uses same pattern as login but calls `signUp()` instead of `signInWithPassword()`.
+
+### How it works
+1. Form structure identical to login (controlled inputs, loading/error states)
+2. Calls `supabase.auth.signUp()` which creates new user in Supabase database
+3. Supabase sends confirmation email (if email confirmation enabled)
+4. On success, redirects to home page
+5. Link points to `/login` for existing users (opposite of login page)
+
+### Key concept
+**signUp vs signInWithPassword** - `signUp()` creates a new user record in Supabase's auth system. `signInWithPassword()` authenticates an existing user. Both return the same response structure: `{data, error}`.
+
+### Interview explanation
+"The signup page mirrors the login page structure but uses Supabase's `signUp()` method to create new accounts. It follows the same controlled component pattern and error handling approach, ensuring consistent UX across auth flows."
+
+### Gotcha
+**Email confirmation** - By default, Supabase may require email confirmation before users can sign in. If `signUp()` succeeds but user can't log in immediately, check your Supabase project settings → Authentication → Email Auth → "Enable email confirmations".
+
+---
+
+## Step 5: Protected Home Page
+
+### apps/web/app/page.tsx
+- Protected dashboard showing logged-in user's email and backend connectivity test.
+- Uses `useEffect` + `supabase.auth.getSession()` to check auth on mount, redirects to `/login` if unauthenticated.
+- Button calls backend `GET /health-auth` with `Authorization: Bearer <token>` header, displays JSON response.
+- Key concepts: Protected routes, useEffect lifecycle, JWT Bearer auth, fetch API with headers.
+- Demonstrates complete auth flow: frontend session → backend JWT verification → response.
+
+---
+
+## Step 6: UI Styling with Tailwind CSS
+
+### What changed
+- `apps/web/app/login/page.tsx` - Added modern gradient background, centered card layout, purple brand colors
+- `apps/web/app/signup/page.tsx` - Matching design with login page, consistent form styling
+- `apps/web/app/page.tsx` - Professional dashboard with navbar, loading spinner, and color-coded response cards
+
+### Why
+Transform unstyled forms into a polished startup MVP with professional visual design.
+
+### How to test
+1. Run `npm run dev` in `apps/web`
+2. Navigate to http://localhost:3000 → should redirect to `/login`
+3. Check login page: gradient background, centered white card, purple buttons with hover states
+4. Click "Register here" → signup page should match design
+5. After login → dashboard with navbar, user email display, and backend test section
+
+---
+
+## Step 7: Email Confirmation UX
+
+### What changed
+- `apps/web/app/signup/page.tsx` - Added success state with email confirmation instructions
+
+### Why
+Supabase has email confirmation enabled by default. Users need clear guidance after signup to check their email and complete the confirmation process before they can log in.
+
+### How to test
+1. Sign up with a new email at `/signup`
+2. After signup, success screen appears with:
+   - Green checkmark icon
+   - "Check your email!" message
+   - Step-by-step instructions (open inbox, click link, return to login)
+   - "Go to Login" button
+   - Spam folder reminder
+3. Check your email for Supabase confirmation link
+4. Click link → redirected to homepage (logged in automatically)
+5. Or return to `/login` and enter credentials
+
+---
+
+## Step 8: JWT Secret Base64 Decoding Fix
+
+### What changed
+- `apps/api/deps/auth.py` - Added base64 decoding of JWT secret before verification
+
+### Why
+Supabase provides the JWT secret as a base64-encoded string, but python-jose's HMAC signature verification (HS256 algorithm) requires raw bytes. Without decoding, JWT verification fails with authentication errors.
+
+### How it works
+1. Import base64 module at top of file
+2. Before calling `jwt.decode()`, decode the secret: `jwt_secret = base64.b64decode(settings.SUPABASE_JWT_SECRET)`
+3. Pass decoded bytes to `jwt.decode()` instead of the base64 string
+4. python-jose now correctly verifies the HMAC signature using raw bytes
+
+**Data transformation:**
+- `.env` stores: `SUPABASE_JWT_SECRET=EiAWu7sBXNhzrgTtJRD9lAfydodVMmnfkXWnZtfdh/4q7LqHMekjsBUQcXB2lbr4ECnsyKIKI+mc2RtjrGFpvw==`
+- After `base64.b64decode()`: converts to raw bytes suitable for HMAC-SHA256 operations
+
+### Key concept
+**Base64 encoding** - A way to represent binary data as ASCII text. Supabase encodes the JWT secret so it can be safely stored in environment variables and config files. But cryptographic functions need the original binary data, not the text representation.
+
+### Interview explanation
+"I debugged a JWT verification failure by discovering that Supabase provides the JWT secret as a base64-encoded string, but python-jose's HMAC verification requires raw bytes. I added `base64.b64decode()` to convert the string to bytes before passing it to `jwt.decode()`. This is a common pattern when working with cryptographic secrets stored in environment variables."
+
+### Gotcha
+**Problem:** Forgetting to decode base64-encoded secrets leads to signature verification failures because HMAC algorithms operate on raw bytes, not base64 strings.
+
+**How we fixed it:** Added `jwt_secret = base64.b64decode(settings.SUPABASE_JWT_SECRET)` before JWT verification. This converts the base64 string to the raw bytes that python-jose expects.
+
+### Check
+Why does Supabase provide the JWT secret as base64-encoded instead of raw bytes?
+<details>
+<summary>Answer</summary>
+Environment variables and config files can only store text (strings). Base64 encoding converts binary data into a text-safe format using only letters, numbers, and a few symbols. This allows the secret to be safely stored in `.env` files, environment variables, and config systems without corruption.
+</details>
+
+---
+
+## Step 9: ES256 JWT Verification with JWKS
+
+### What changed
+- `apps/api/deps/auth.py` - Switched from manual secret decoding to JWKS endpoint fetching
+- `apps/api/requirements.txt` - Added `requests==2.32.3` for HTTP calls
+
+### Why
+Supabase uses ES256 (Elliptic Curve Digital Signature Algorithm) for JWT signing, not HS256 (HMAC). ES256 requires a public/private key pair instead of a shared secret. The previous base64 decoding approach only works for symmetric algorithms like HS256.
+
+### How it works
+1. Extract JWT token from Authorization header
+2. Fetch Supabase's public keys from JWKS endpoint: `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`
+3. Pass JWKS to `jwt.decode()` - python-jose automatically:
+   - Reads the token header to identify the algorithm (ES256)
+   - Selects the matching public key from JWKS by `kid` (key ID)
+   - Verifies the signature using Elliptic Curve cryptography
+4. Extract `user_id` (from `sub` claim) and `email` from verified payload
+5. Return user context to route handler
+
+**Key difference from HS256:**
+- HS256 (symmetric): Same secret signs AND verifies tokens
+- ES256 (asymmetric): Private key signs, public key verifies (more secure - backend never has signing key)
+
+### Key concept
+**JWKS (JSON Web Key Set)** - A public endpoint that provides cryptographic public keys in JSON format. Clients fetch these keys to verify JWT signatures without needing access to private signing keys. This is standard for OAuth/OIDC providers like Supabase, Auth0, and Google.
+
+### Interview explanation
+"I debugged JWT verification by discovering Supabase uses ES256 (Elliptic Curve) instead of HS256 (HMAC). ES256 requires fetching the public key from Supabase's JWKS endpoint rather than using a shared secret. I added a `requests.get()` call to fetch the JWKS, then passed it to python-jose's `jwt.decode()` which automatically selects the correct key and verifies the signature. This is more secure because the backend never has access to the private signing key."
+
+### Gotcha
+**Problem:** Assuming all JWTs use HS256 (shared secret) when modern auth providers like Supabase use asymmetric algorithms (ES256, RS256) with public/private key pairs.
+
+**How we fixed it:**
+1. Inspected the JWT header (first 20 chars decoded from base64) which revealed `"alg":"ES256"`
+2. Switched from using `SUPABASE_JWT_SECRET` directly to fetching public keys from the JWKS endpoint
+3. Let python-jose handle algorithm detection and key selection automatically
+
+### Check
+Why is ES256 more secure than HS256 for JWT signing?
+<details>
+<summary>Answer</summary>
+With HS256, both the token issuer (Supabase) and verifier (your backend) share the same secret. If your backend is compromised, attackers can forge valid tokens. With ES256, only Supabase has the private key for signing - your backend only has the public key for verification. Even if compromised, attackers cannot create valid tokens, only verify them.
+</details>
+
+---
+

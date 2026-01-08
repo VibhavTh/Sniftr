@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  envDir: '../..' // goes up two levels to the root folder
+  // Next.js 15 automatically detects workspace root for env files
 };
 export default nextConfig;
