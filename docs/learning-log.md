@@ -438,3 +438,131 @@ With HS256, both the token issuer (Supabase) and verifier (your backend) share t
 
 ---
 
+## Frontend: API Utility Functions
+
+### apps/web/lib/api.ts
+- Provides reusable `apiGet<T>()` and `apiPost<T>()` functions for authenticated backend requests.
+- Automatically retrieves Supabase session and includes JWT access token as Bearer token in Authorization header.
+- Key concepts: TypeScript generics for type-safe responses, environment variables for API base URL, fetch API with headers.
+- Eliminates code duplication by centralizing authentication logic across all API calls.
+
+---
+
+## Frontend: Browse Page with Pagination
+
+### apps/web/app/browse/page.tsx
+- Protected route that displays paginated fragrance bottles fetched from the backend API.
+- Uses `apiGet<Bottle[]>()` to fetch bottles with page and limit query parameters.
+- Key concepts: Protected routes with auth check, pagination state management, "Load More" pattern, TypeScript interfaces for API responses.
+- Manages multiple states: `bottles` array, `loading` for initial load, `loadingMore` for pagination, `error` for failures, `pageNum` for tracking current page, `hasMore` flag to hide button when no more results.
+- On page 1, replaces bottles array. On subsequent pages, appends new bottles to existing array using spread operator.
+- Sets `hasMore` to false when fewer than 12 bottles returned, indicating end of results.
+- useEffect runs auth check and initial fetch on mount, empty dependency array ensures it runs once.
+
+---
+
+## UI Implementation: Design System and Pages
+
+### What changed
+- `apps/web/app/globals.css` - Added Google Fonts import for Cormorant (serif) and Inter (sans-serif), updated body font and background color
+- `apps/web/app/browse/page.tsx` - Implemented Explore page with search bar, filters button, and 3-column grid matching Figma design
+- `apps/web/app/finder/page.tsx` - Created Finder page with centered card interface and Pass/Like actions
+- `apps/web/app/collection/page.tsx` - Created Collection page with elegant empty state and CTA buttons
+
+### Why
+Transform the functional prototype into a polished, designer-led MVP by implementing the exact Figma designs. The design handoff specified an editorial/luxury aesthetic with calm whitespace, muted colors, and consistent typography using Cormorant for headings and Inter for body text.
+
+### How it works
+
+**Typography System:**
+- Loaded via Google Fonts: `Cormorant:wght@300;400;500;600;700` and `Inter:wght@300;400;500;600`
+- Headings use `font-serif` class (Cormorant) with `font-light` (300 weight) for elegant display
+- Body text uses Inter via global body style with light font weights (300-400)
+- All measurements in pixels `text-[15px]` instead of Tailwind's default rem scale for precise control
+- Letter spacing via `tracking-[0.3em]` for logo, `tracking-widest` for brand names
+
+**Color Palette:**
+- Background: `bg-stone-50` (warm off-white) instead of pure white
+- Text: `text-neutral-900` (near-black) for primary, `text-neutral-500` for secondary
+- Borders: `border-neutral-200` (very light gray) for subtle separation
+- Primary action: `bg-neutral-900` with `hover:bg-neutral-800` for buttons
+- Secondary actions: `border border-neutral-300` with `hover:bg-neutral-50`
+
+**Navigation Pattern:**
+- Consistent across all three pages: logo left, nav center, user icon right
+- Logo: "FRAGRANCE" in Cormorant serif, uppercase, wide letter-spacing (`tracking-[0.3em]`)
+- Active page indicated with `underline underline-offset-4` instead of border-bottom
+- Fixed height `h-[72px]` with horizontal padding `px-8 lg:px-14`
+
+**Explore Page (Browse):**
+- Page title: `font-serif text-[42px] font-light` with subtitle below
+- Search bar with icon and filters button in flex row with `gap-3`
+- 3-column grid: `grid-cols-3` with `gap-x-12 gap-y-20` for generous whitespace
+- Card images: `aspect-[2/3]` (taller than previous 3:4) with `bg-neutral-200` placeholder
+- Brand names: `text-[11px] uppercase tracking-widest` in light gray
+- Fragrance names: `font-serif text-[24px] font-light` for hierarchy
+- Accord tags: Semantic colors with `px-3 py-1.5 rounded-sm` (no borders)
+
+**Finder Page:**
+- Centered card with progress indicator (`1 of 8`)
+- Card structure: Name/brand at top, tall image, accords section below
+- Action buttons in 2-column grid: Pass (bordered) and Like (filled)
+- Icons inline with button text using SVG stroke icons
+
+**Collection Page:**
+- Empty state: Centered white card with `border border-neutral-200 rounded-sm`
+- Heart icon in circular gray background `w-20 h-20 rounded-full bg-neutral-100`
+- Two action buttons side-by-side: "Start Finder" (primary) and "Explore" (secondary)
+- When populated, uses same grid layout as Explore page
+
+**Semantic Accord Colors:**
+- Woody: `bg-amber-100 text-amber-900`
+- Amber: `bg-orange-100 text-orange-900`
+- Spicy: `bg-red-100 text-red-900`
+- Floral: `bg-pink-100 text-pink-900`
+- Fresh/Aromatic: `bg-green-100 text-green-900`
+- Powdery: `bg-purple-100 text-purple-900`
+- Aquatic: `bg-blue-100 text-blue-900`
+- Citrus: `bg-yellow-100 text-yellow-900`
+- Sweet/Fruity: `bg-rose-100 text-rose-900`
+- Smoky: `bg-stone-200 text-stone-900`
+- Default: `bg-neutral-100 text-neutral-700`
+
+### Key concepts
+
+**Design Protocol Compliance:**
+- No bright colors, gradients, or heavy shadows (avoided generic SaaS look)
+- Generous whitespace: `py-20` page padding, `mb-16` section spacing, `gap-y-20` grid rows
+- Light font weights: `font-light` (300) for most text, `font-normal` (400) for small labels
+- Muted semantic colors: Using `*-100` background shades with `*-900` text for subtle contrast
+- Precise sizing: Pixel values `text-[15px]` `text-[11px]` instead of Tailwind's default scale
+
+**Responsive Grid:**
+- `grid-cols-1 md:grid-cols-2 lg:grid-cols-3` for mobile→tablet→desktop
+- Larger screens show 3 columns at `lg:` breakpoint (1024px)
+- Maintains consistent spacing across breakpoints
+
+**Component Reusability:**
+- Navigation bar HTML duplicated across pages (could be extracted to shared component)
+- `getAccordColor()` function duplicated across pages (could be extracted to shared utility)
+- Bottle card structure consistent between Explore and Collection pages
+
+### Interview explanation
+"I implemented a luxury editorial design system following Figma specs with Cormorant serif for headings and Inter for body text. The design emphasizes whitespace, muted colors, and light font weights to create an upscale fragrance catalog aesthetic. I used semantic color mapping for accord tags so users can instantly recognize fragrance families - woody is always amber, floral is always pink, etc. The three main pages share a consistent navigation pattern and grid layout, with the Collection page featuring an empty state that guides new users to start discovering fragrances."
+
+### Gotcha
+**Problem:** Using Tailwind's default text scale (`text-sm`, `text-base`) made it hard to match Figma's exact pixel sizes. Different designers expect different font sizes for "small" text.
+
+**How we fixed it:** Used bracket notation for exact pixel values: `text-[15px]`, `text-[11px]`, `text-[42px]`. This gives precise control and makes the code match the Figma measurements directly.
+
+**Best practice:** For design-heavy projects with specific mockups, use pixel values to match designer intent exactly. For design systems with semantic sizing (small/medium/large), use Tailwind's default scale.
+
+### Check
+Why use `aspect-[2/3]` instead of `aspect-[3/4]` for fragrance images?
+<details>
+<summary>Answer</summary>
+The taller 2:3 aspect ratio (portrait) better matches the proportions of real perfume bottles and creates more elegant vertical cards. It also provides more visual prominence for the product images, which is important for a visually-driven fragrance discovery app. The Figma designs showed taller rectangles, so 2:3 more closely matches the design intent than the shorter 3:4 ratio.
+</details>
+
+---
+
