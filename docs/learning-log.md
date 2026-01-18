@@ -566,3 +566,372 @@ The taller 2:3 aspect ratio (portrait) better matches the proportions of real pe
 
 ---
 
+# Project Post-Mortem: Fragrance Image Scraper
+
+## Overview
+A resilient Python-based data ingestion pipeline designed to augment a 24,000-row fragrance dataset with official product image URLs via the DuckDuckGo Search API.
+
+## Timeline of Obstacles & Resolutions
+
+### 1. Character Encoding Conflict
+- **Symptom:** `UnicodeDecodeError` when reading the source CSV.
+- **Cause:** European fragrance names (e.g., 'Guerlain Homme L'Eau Boisée') used Latin-1 encoding.
+- **Fix:** Refactored `pd.read_csv` to use `encoding='latin1'`.
+
+### 2. Detection & Rate Limiting (The 403 Problem)
+- **Symptom:** HTTP 403 Errors after ~10 requests.
+- **Cause:** Heuristic bot detection identifying the script's default headers.
+- **Fix:** - Implemented **User-Agent Spoofing** to mimic a Chrome browser.
+    - Added **Exponential Backoff** (sleeping longer after each failure).
+    - Introduced **Stochastic Jitter** (randomized sleep intervals) to break patterns.
+
+### 3. Dependency Instability
+- **Symptom:** `TypeError: __init__() got an unexpected keyword argument 'headers'`.
+- **Cause:** A breaking change in the `ddgs` library update.
+- **Fix:** Conducted a library audit and refactored the context manager to align with the new API signature.
+
+## Engineering Lessons Learned
+
+### Resumability is Mandatory
+For any job taking >1 hour, the script must be able to "pick up where it left off." Using file-length checks to set the `start_index` saved roughly 10 hours of redundant processing time.
+
+### Defensive Data Cleaning
+Never trust the input. Rating counts were strings with non-numeric characters. Implementing a regex-based sanitization layer before sorting was crucial for the "Top 1000" prioritization logic.
+
+### Politeness as a Strategy
+Scraping is a social contract. Using a 10-15 second delay and a 2-minute "cooling period" every 25 items ensured the IP address remained in good standing with the search provider.
+
+
+
+# Project Post-Mortem: ScentlyMax TF-IDF Recommendation Engine
+
+## Overview
+A high-performance, content-based recommendation engine built to deliver real-time fragrance suggestions over a 24,000-row dataset using **TF-IDF vectorization** and **Cosine Similarity**.
+
+The system supports both *“find similar fragrances”* and *free-text scent search* while remaining memory-efficient and production-ready.
+
+## Timeline of Obstacles & Resolutions
+
+### 1. Data-to-Matrix Index Mismatch
+- **Symptom:** `KeyError` exceptions or incorrect perfume details returned during similarity queries.
+- **Cause:** TF-IDF matrix row indices (`0..n`) became desynchronized from database primary keys (`original_index`) after filtering and cleaning operations.
+- **Fix:** Engineered a **JSON mapping layer** (`bottle_id_map.json`) to decouple ML matrix indices from SQL database identifiers, ensuring deterministic lookup and correct joins.
+
+### 2. High-Dimensional Memory Bloat
+- **Symptom:** System crashes or extreme lag when generating similarity matrices.
+- **Cause:** A dense representation of 24,000 items × ~20,000 features resulted in ~480 million floating-point values, most of which were zero.
+- **Fix:** Migrated to **Scipy CSR (Compressed Sparse Row)** matrices, reducing memory usage by ~95% by storing only non-zero feature values.
+
+### 3. Serving vs. Training Conflict
+- **Symptom:** FastAPI server cold starts exceeding 30 seconds with high CPU utilization.
+- **Cause:** Model training logic was embedded in application startup, triggering full TF-IDF recomputation on every server reboot.
+- **Fix:** Split the pipeline into:
+  - **Offline artifact generation** (`train_recommender.py`)
+  - **Production inference class** (`recommender.py`) that loads prebuilt artifacts directly into memory
+
+## Engineering Lessons Learned
+
+### Feature Engineering Is a Weighting Game
+- **Insight:** Raw ingredient lists were insufficient for capturing fragrance similarity.
+- **Action:** Boosted **Main Accords** 3× via controlled string repetition so high-level scent “vibes” dominated similarity scoring.
+- **Outcome:** Woody, fresh, and oriental fragrances remained correctly clustered even when sharing common notes like citrus.
+
+### Preprocessing Symmetry Is Non-Negotiable
+- **Insight:** Inconsistent preprocessing silently degrades similarity quality.
+- **Action:** Applied identical regex normalization, lowercasing, and punctuation stripping to both training data and user queries.
+- **Outcome:** Eliminated false negatives caused by minor formatting differences.
+
+### The “Self-Match” Gotcha
+- **Insight:** Cosine similarity always returns a perfect self-match.
+- **Action:** Requested `k + 1` neighbors and filtered out the seed item from results.
+- **Outcome:** Users consistently receive 10 *new* recommendations instead of the fragrance they are viewing.
+
+## Interview Cheat Sheet (STAR Format)
+
+### Situation
+- **Context:** Required a fast, scalable recommendation engine for a 24,000-item fragrance catalog.
+
+### Task
+- **Goal:** Support both similarity-based discovery and natural-language scent search in production.
+
+### Action
+- **Implemented:**  
+  - A weighted **metadata soup** combining notes and accords  
+  - **TF-IDF** to emphasize rare scent components  
+  - **Cosine Similarity** in a ~20,000-feature vector space  
+  - A **Sparse Matrix pipeline** for memory efficiency  
+  - A clean separation between training and inference  
+
+### Result
+- **Impact:** Delivered a production-grade recommendation engine returning top matches in **<10ms**, with a modular, scalable architecture suitable for future hybrid and collaborative filtering extensions.
+
+---
+
+# Data Ingestion Failure: Upsert Requires Unique Constraint
+
+## Symptom
+```python
+postgrest.exceptions.APIError: {
+  'code': '42P10',
+  'message': 'there is no unique or exclusion constraint matching the ON CONFLICT specification'
+}
+```
+
+When attempting to run `supabase.table("bottles").upsert(bottle, on_conflict="original_index").execute()` to populate the bottles table from CSV, the operation failed with PostgreSQL error code 42P10.
+
+## Root Cause
+PostgreSQL's `ON CONFLICT` clause requires the conflict column (`original_index` in this case) to have either a **UNIQUE constraint** or be a **PRIMARY KEY**. This is a hard database requirement, not optional.
+
+The initial schema had:
+```sql
+original_index INTEGER,  -- Regular column
+CREATE INDEX idx_bottles_original_index ON bottles(original_index);  -- Regular B-tree index
+```
+
+A regular index allows duplicate values and cannot be used for conflict detection. PostgreSQL's ON CONFLICT mechanism needs deterministic O(log n) lookup to decide whether to INSERT (new row) or UPDATE (existing row), which requires uniqueness guarantees.
+
+## Debugging Reasoning
+1. **Error code lookup:** `42P10` is PostgreSQL's "invalid column reference" for ON CONFLICT operations
+2. **Schema inspection:** Checked `specs/db/create_bottles.sql` and found `original_index INTEGER` without UNIQUE
+3. **PostgreSQL documentation:** Confirmed ON CONFLICT requires unique/exclusion constraints, not just indexes
+4. **Business logic validation:** `original_index` is the stable ML model ID, so it *should* be unique per fragrance
+
+## Resolution
+Added UNIQUE constraint via SQL migration in Supabase dashboard:
+```sql
+ALTER TABLE public.bottles
+  ADD CONSTRAINT bottles_original_index_unique UNIQUE (original_index);
+```
+
+Also updated `specs/db/create_bottles.sql` to prevent this issue for future table recreations:
+```sql
+original_index INTEGER UNIQUE,  -- UNIQUE constraint required for upsert operations
+```
+
+After adding the constraint, the upsert operation succeeded immediately with no code changes to the Python ingestion script.
+
+## Engineering Lesson
+**Schema constraints are not just for data validation - they enable database features.** UNIQUE constraints serve two purposes:
+1. Data integrity: Prevent duplicate values
+2. Conflict resolution: Enable deterministic upsert operations via ON CONFLICT
+
+When designing idempotent ingestion pipelines, the conflict column must be unique in both the *logical model* (business requirement) and the *physical schema* (database constraint). A regular index is insufficient.
+
+## Interview Framing
+"When implementing the fragrance data ingestion pipeline, I designed an idempotent upsert operation using `original_index` as the conflict key, allowing the script to be safely re-run. I encountered a PostgreSQL error indicating no unique constraint matched the ON CONFLICT specification. I debugged this by recognizing that while I had created a regular index on `original_index`, PostgreSQL's conflict resolution mechanism requires a UNIQUE constraint for deterministic O(log n) lookups. I added the UNIQUE constraint, which both enforced data integrity and enabled the upsert operation, ensuring the ML model's stable IDs remain unique across ingestion runs."
+
+
+## ScentlyMax Hybrid Recommendation Engine
+
+
+## 1. System Overview
+
+The ScentlyMax recommendation engine is a multi-stage hybrid system designed to provide real-time fragrance discovery. It balances **"scent profile relevance"** (what a perfume smells like) with **"market wisdom"** (what the community values). The system is decoupled into an offline training pipeline and an online inference engine to ensure sub-100ms response times.
+
+---
+
+## 2. Phase-by-Phase Evolution
+
+### Phase 1: The Semantic Core (TF-IDF)
+
+To understand fragrance relationships, we transformed unstructured scent notes into a high-dimensional vector space.
+
+**The "Metadata Soup":** We synthesized a text document for each fragrance. We implemented feature weighting by repeating "Main Accords" three times. This ensures the "vibe" (e.g., Woody, Floral) outweighs specific minor notes.
+
+**Mathematical Grounding:** We utilized TF-IDF (Term Frequency-Inverse Document Frequency). We intentionally relied on the IDF component to handle "rare notes" naturally—mathematically, a rare note like Oud is automatically more informative than a common note like Musk.
+
+**Similarity Metric:** Used Cosine Similarity to measure the angular distance between vectors, making the system robust against varying description lengths.
+
+### Phase 2: Runtime Architecture & Decoupling
+
+**Artifact Persistence:** To avoid retraining on every API request, we serialized the state into three artifacts: `vectorizer.joblib`, `tfidf_matrix.npz` (sparse format), and a `bottle_id_map.json`.
+
+**ID Stability:** We established `original_index` as the "Source of Truth" ID across the ML artifacts, the FastAPI logic, and the Supabase database.
+
+### Phase 3: Popularity & The Bayesian Reranker
+
+A common failure in RecSys is recommending "similar" items that are universally hated or have zero reviews. We addressed this with a Two-Stage Reranking Layer.
+
+**The Bayesian Formula:** To avoid "small-sample bias" (e.g., a 5-star rating with only 1 review), we used a Bayesian weighted rating:
+
+$$WR = \frac{v}{v+m}R + \frac{m}{v+m}C$$
+
+where v=count, m=threshold, R=rating, C=mean.
+
+**The Hybrid Blend:** We implemented a local min-max normalization on similarity scores within the top 50 candidates, then blended them using an α of 0.85.
+
+---
+
+## 3. Engineering Obstacles & Resolutions
+
+| Obstacle | Root Cause | Engineering Resolution |
+|----------|-----------|------------------------|
+| Ingestion "Conflict" Errors | Attempting to UPSERT data into Supabase without a Unique constraint on `original_index` | Applied a UNIQUE INDEX in Postgres. Taught me that Idempotency requires schema-level enforcement |
+| Numerical Instability | TF-IDF similarity scores were tightly clumped (e.g., 0.12–0.15), allowing popularity (0.0–1.0) to dominate unfairly | Implemented Local Min-Max Normalization on the candidate pool. This rescaled the similarity "winners" to a full 0–1 range before blending |
+| Memory Inefficiency | 24,000 perfumes × 20,000 features created a dense matrix too large for RAM | Switched to Scipy Sparse CSR format, reducing the memory footprint by >90% |
+| The "Self-Match" Bug | The engine recommended the current bottle as the #1 match | Added a filtering layer in the `recommend_by_bottle_id` method to exclude the seed_id |
+
+---
+
+## 4. Tradeoffs & Rejected Approaches
+
+**Why not Image Similarity?** While visual branding matters, scent notes are the primary driver of purchase intent. We prioritized a text-based "Scent Profile" for the MVP to maintain a lower compute overhead.
+
+**Why Retrieval + Rerank vs. One Stage?** Re-calculating Bayesian popularity for 24,000 rows at runtime is slow. By narrowing the field to 50 "candidates" first, we can afford more complex reranking logic without hitting latency caps.
+
+**Deferred ALS (Collaborative Filtering):** We chose to defer User-Item matrix factorization until we have a substantial "Like/Dislike" dataset. Starting with Content-Based filtering solves the Cold Start Problem.
+
+---
+
+## 5. Interview Talking Points (The "Senior" Narrative)
+
+### How I explain the "Alpha" (0.85)
+
+"The 0.85 alpha represents our business logic. We want the system to be relevance-first. A perfume that smells like 'Rose' but is unpopular is still a better match for a 'Rose' query than a popular 'Vanilla' perfume. The 15% popularity weight acts as a 'tie-breaker' or a 'quality nudge' among similar candidates."
+
+### My stance on Data Integrity
+
+"The most critical lesson was the alignment between the ML model and the Production DB. By enforcing a UNIQUE constraint on our `original_index` in Postgres, we ensured that our training artifacts and our API responses never drifted apart, maintaining a consistent user experience."
+
+---
+
+# Integrating ML Recommender with FastAPI: Singleton Pattern & Data Layer
+
+## Symptom
+After building the hybrid TF-IDF + popularity recommender as an offline training pipeline, I needed to integrate it into a production FastAPI application. The challenge: how to load ~95MB of artifacts (TF-IDF matrix, vectorizer, ID mappings) **once** at server startup rather than on every request, while ensuring all API responses match the frontend contract (arrays for accords/notes, not TEXT columns).
+
+## Context
+The ML recommender was complete and tested in isolation, returning ranked lists of `original_index` values. The API layer needed to:
+1. Load recommender artifacts into memory at startup (not per-request)
+2. Fetch full bottle details from Supabase using the ML model's ranked IDs
+3. Transform database rows (TEXT columns with accord1-5, comma-separated notes) into UI-ready format (arrays)
+4. Preserve the ML model's ranking order in final responses
+5. Serve multiple endpoints: random bottles, text search, similarity search, and swipe candidates
+
+## The Singleton Pattern: FastAPI Lifespan Context Manager
+
+**Problem**: Loading 95MB of artifacts on every API request would cause 1000ms+ latency. Need to load once and share across all requests.
+
+**Solution**: FastAPI's `@asynccontextmanager` lifespan pattern loads artifacts at startup and stores them in `app.state`.
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load recommender artifacts once into memory
+    print("🚀 Loading recommender artifacts...")
+    recommender = FragranceRecommender()
+    artifacts_dir = Path(__file__).parent / "intelligence" / "artifacts"
+    recommender.load_artifacts(str(artifacts_dir))
+
+    # Store in app.state for access in route handlers
+    app.state.recommender = recommender
+    print("✅ Recommender loaded and ready!")
+
+    yield  # Server runs here, handling requests
+
+    print("👋 Shutting down...")
+
+app = FastAPI(lifespan=lifespan)
+```
+
+**Result**: Artifacts loaded once at startup. Route handlers access via `request.app.state.recommender`. This reduced recommendation latency from ~1000ms (load + compute) to <10ms (compute only).
+
+## The Data Normalization Layer: Bridging Schema and Contract
+
+**Problem**: Database uses denormalized TEXT schema (accord1-5 columns, comma-separated notes) for MVP speed, but API contract requires arrays `main_accords[]`, `notes_top[]`, etc.
+
+**Solution**: Created a thin transformation layer in `utils/bottles.py` that runs at the API boundary:
+
+```python
+def normalize_bottle(db_row: dict) -> dict:
+    # Collect accords from separate columns, filter None, preserve prominence order
+    accords = [db_row.get(f"accord{i}") for i in range(1, 6)]
+    main_accords = [a for a in accords if a]
+
+    # Split comma-separated notes into arrays
+    notes_top = split_comma_separated(db_row.get("notes_top"))
+    notes_middle = split_comma_separated(db_row.get("notes_middle"))
+    notes_base = split_comma_separated(db_row.get("notes_base"))
+
+    return {
+        "id": db_row.get("original_index"),  # INT for ML compatibility
+        "main_accords": main_accords,
+        "notes_top": notes_top,
+        "notes_middle": notes_middle,
+        "notes_base": notes_base,
+        # ... other fields
+    }
+```
+
+**Key Decision**: Transform at the API layer (not in database) to maintain flexibility. Can migrate schema later without breaking ML artifacts or frontend contract.
+
+## Preserving ML Ranking Order
+
+**Problem**: Supabase's `.in_(column, [ids])` filter returns rows in **arbitrary order**, not the ML model's ranking. If we return bottles in database order, we lose the hybrid TF-IDF + popularity ranking.
+
+**Solution**: Two-step reconstruction pattern:
+
+```python
+# ML model returns ranked IDs: [123, 456, 789]
+bottle_ids = recommender.recommend_by_query(q, k=20)
+
+# Supabase returns rows in arbitrary order
+response = supabase.table("bottles").select("*").in_("original_index", bottle_ids).execute()
+
+# Build lookup dict for O(1) access
+bottles_by_id = {row["original_index"]: row for row in response.data}
+
+# Reconstruct in ML ranking order
+results = [normalize_bottle(bottles_by_id[bid]) for bid in bottle_ids if bid in bottles_by_id]
+```
+
+**Why This Matters**: The ML model spends significant computation on hybrid ranking (TF-IDF similarity + Bayesian popularity reranking). If we don't preserve order, we've wasted that work and delivered a worse user experience.
+
+## Endpoint Architecture: Four Routes, One Data Flow
+
+Implemented four endpoints following the pattern: **Call ML Model → Fetch from DB → Normalize → Preserve Order**
+
+1. **GET /recommendations** - General-purpose search/similarity (supports `q` OR `seed_bottle_id`, variable `k`)
+2. **GET /bottles/random** - Cold start: fetch random bottles for initial swipe queue (no auth, no ML)
+3. **GET /swipe/candidates** - Thin wrapper: returns k=50 similar bottles based on seed (uses recommender)
+4. **POST /swipes** - Log user like/pass actions for future collaborative filtering (requires JWT auth)
+
+All endpoints use the same `normalize_bottle()` helper, ensuring consistent response format across the API surface.
+
+## Engineering Lessons
+
+### 1. Singleton Pattern for Expensive Resources
+**Lesson**: When you have expensive initialization (file I/O, matrix operations, model loading), use application lifespan hooks. Don't repeat work on every request.
+
+**FastAPI Pattern**:
+- Startup: Load resources into `app.state`
+- Request handlers: Access via `request.app.state.resource`
+- Shutdown: Clean up resources if needed
+
+### 2. Separation of Concerns in Data Transformation
+**Lesson**: Keep schema decisions separate from API contracts. The database schema serves storage efficiency; the API contract serves client needs. Transform at the boundary.
+
+**Pattern**:
+- Database: Denormalized for write performance (TEXT columns, no joins)
+- API Layer: `normalize_bottle()` transforms to client format
+- Future Migration: Can change schema without breaking frontend or ML model
+
+### 3. Order Preservation in Multi-Stage Pipelines
+**Lesson**: When combining ranked results from ML models with database fetches, **always preserve the ML ranking order**. Database queries don't guarantee order.
+
+**Anti-Pattern**: `SELECT * FROM bottles WHERE id IN (...)` then returning rows as-is
+**Correct Pattern**: Build lookup dict, reconstruct in original order
+
+### 4. ID Stability Across System Boundaries
+**Lesson**: Use a single stable ID (`original_index`) across all system layers:
+- ML artifacts (bottle_id_map.json)
+- Database UNIQUE constraint
+- API responses (`"id": original_index`)
+
+This prevents drift between training data and production data.
+
+## Interview Framing
+"When integrating the ML recommender into production, I faced the challenge of loading 95MB of artifacts efficiently while maintaining ranking order and transforming denormalized database rows into the API contract. I implemented FastAPI's lifespan context manager to load artifacts once at startup into `app.state`, reducing per-request latency from ~1000ms to <10ms. To bridge the gap between the database schema (TEXT columns) and API contract (arrays), I created a thin normalization layer at the API boundary. The critical insight was using a lookup dict to reconstruct results in ML ranking order after Supabase queries, preserving the hybrid TF-IDF + popularity ranking. This architecture cleanly separated concerns: the database optimizes for storage, the ML model optimizes for relevance, and the API layer transforms data to match client needs."
+
+---
+

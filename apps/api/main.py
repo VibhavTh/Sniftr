@@ -17,8 +17,40 @@ System context:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from pathlib import Path
+from intelligence.recommender import FragranceRecommender
 
-from routers import health
+from routers import health, recommendations, swipes, bottles, swipe_candidates
+
+
+# FastAPI lifespan context manager for startup and shutdown logic.
+# This function runs when uvicorn starts the server (before accepting requests)
+# and again when the server shuts down. The yield statement separates startup
+# from shutdown logic. We use this to load the ML recommender artifacts once
+# at startup and store them in app.state, avoiding repeated loading on every request.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load recommender artifacts once into memory
+    # The recommender loads TF-IDF matrix (~95MB sparse), vectorizer, and ID mappings.
+    # Loading at startup (not per-request) ensures sub-10ms recommendation latency.
+    print("🚀 Loading recommender artifacts...")
+    recommender = FragranceRecommender()
+
+    # Artifacts directory is at apps/api/intelligence/artifacts/
+    # Contains: vectorizer.joblib, tfidf_matrix.npz, bottle_id_map.json, popularity_map.json
+    artifacts_dir = Path(__file__).parent / "intelligence" / "artifacts"
+    recommender.load_artifacts(str(artifacts_dir))
+
+    # Store recommender in app.state for access in route handlers via request.app.state.recommender
+    # This creates a singleton pattern - one instance shared across all requests
+    app.state.recommender = recommender
+    print("✅ Recommender loaded and ready!")
+
+    yield  # Server runs here, handling requests
+
+    # Shutdown: Clean up resources (none needed for now)
+    print("👋 Shutting down...")
 
 
 # Initialize the FastAPI application instance.
@@ -28,7 +60,8 @@ from routers import health
 app = FastAPI(
     title="ScentlyMax API",
     version="0.1.0",
-    description="Backend API for fragrance discovery and recommendations"
+    description="Backend API for fragrance discovery and recommendations",
+    lifespan=lifespan
 )
 
 
@@ -54,6 +87,23 @@ app.add_middleware(
 # FastAPI automatically discovers all routes decorated with @router.get/@router.post
 # in the included router and adds them to the main app.
 app.include_router(health.router, tags=["health"])
+
+# Register the recommendations router.
+# This includes the /recommendations endpoint that integrates the ML recommender with Supabase.
+# Supports both text search queries and bottle similarity recommendations.
+app.include_router(recommendations.router, tags=["recommendations"])
+
+# Register the swipes router for user interaction logging.
+# Logs like/pass actions to swipes table for future collaborative filtering.
+app.include_router(swipes.router, tags=["swipes"])
+
+# Register the bottles router for random bottle fetching.
+# Provides random bottles for initial swipe queue before personalization.
+app.include_router(bottles.router, tags=["bottles"])
+
+# Register the swipe_candidates router for personalized swipe queue generation.
+# Returns k=50 similar bottles based on seed bottle for continuous swiping.
+app.include_router(swipe_candidates.router, tags=["swipes"])
 
 
 # Root endpoint for API information.
