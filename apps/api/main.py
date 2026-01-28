@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from intelligence.recommender import FragranceRecommender
 
-from routers import health, recommendations, swipes, bottles, swipe_candidates
+from routers import health, recommendations, swipes, bottles, swipe_candidates, collections
 
 
 # FastAPI lifespan context manager for startup and shutdown logic.
@@ -104,6 +104,11 @@ app.include_router(bottles.router, tags=["bottles"])
 # Register the swipe_candidates router for personalized swipe queue generation.
 # Returns k=50 similar bottles based on seed bottle for continuous swiping.
 app.include_router(swipe_candidates.router, tags=["swipes"])
+
+# Register the collections router for user-curated bottle lists.
+# Provides POST/GET/DELETE for wishlist, favorites, and personal collections.
+# All endpoints require JWT authentication.
+app.include_router(collections.router, tags=["collections"])
 
 
 # Root endpoint for API information.

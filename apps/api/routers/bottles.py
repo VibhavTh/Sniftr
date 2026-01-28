@@ -9,14 +9,14 @@ Responsibilities:
 System context:
 - Random selection is not user-specific (no auth required for v1)
 - Used by frontend to initialize swipe queue before personalization kicks in
-- Results normalized using utils.bottles.normalize_bottle
+- Results normalized using utils.bottle_normalizer.normalize_bottle
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from supabase import create_client
 from core.config import settings
-from utils.bottles import normalize_bottle
+from utils.bottle_normalizer import normalize_bottle
 
 
 router = APIRouter()
@@ -52,5 +52,44 @@ async def get_random_bottles(
 
     return {
         "count": len(results),
-        "bottles": results
+        "results": results
     }
+
+
+# Fetch a single bottle by ID for detail modal.
+# No authentication required - public catalog data.
+# Uses original_index as bottle_id (not UUID) for ML model compatibility.
+# Returns normalized bottle with all fields needed for modal display.
+@router.get("/bottles/{bottle_id}")
+async def get_bottle_by_id(
+    bottle_id: int
+):
+    """
+    Get a single bottle by its ID (original_index).
+
+    Args:
+        bottle_id: The bottle's original_index value
+
+    Returns:
+        Normalized bottle object with all fields for detail modal
+
+    Raises:
+        404: If bottle_id doesn't exist in database
+    """
+    # Query Supabase for bottle by original_index
+    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    response = supabase.table("bottles") \
+        .select("*") \
+        .eq("original_index", bottle_id) \
+        .execute()
+
+    # Check if bottle exists
+    if not response.data or len(response.data) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Bottle with id {bottle_id} not found"
+        )
+
+    # Normalize and return single bottle
+    bottle = normalize_bottle(response.data[0])
+    return bottle

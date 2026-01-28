@@ -840,7 +840,7 @@ app = FastAPI(lifespan=lifespan)
 
 **Problem**: Database uses denormalized TEXT schema (accord1-5 columns, comma-separated notes) for MVP speed, but API contract requires arrays `main_accords[]`, `notes_top[]`, etc.
 
-**Solution**: Created a thin transformation layer in `utils/bottles.py` that runs at the API boundary:
+**Solution**: Created a thin transformation layer in `utils/bottle_normalizer.py` that runs at the API boundary:
 
 ```python
 def normalize_bottle(db_row: dict) -> dict:
@@ -935,3 +935,272 @@ This prevents drift between training data and production data.
 
 ---
 
+
+# 2026-01-18 — Frontend Architecture: End-to-End Data Flows & System Boundaries
+
+## Summary
+Documented the complete end-to-end data flow for two primary user journeys: browsing/searching fragrances (Explore) and getting ML-powered recommendations (Recommender). Clarified how frontend components, API client, backend routers, intelligence layer, and Supabase interact across system boundaries.
+
+## Frontend–Backend Interactions
+
+### Flow 1: Explore/Browse (Direct Database Query)
+```
+User on Explore page
+  → Search input / Filters
+  → lib/api.ts (adds JWT from Supabase session)
+  → GET /bottles?q=sandalwood&limit=20
+  → routers/bottles.py
+     - Verify JWT using Supabase public key
+     - Query Supabase: SELECT * FROM bottles WHERE name ILIKE '%sandalwood%'
+     - For each row: normalize_bottle(row) via utils/bottle_normalizer.py
+     - Return { bottles: [Bottle, Bottle, ...] }
+  → Frontend receives typed response
+  → Render grid of FragranceCard components
+```
+
+**No ML involved** — pure SQL search with text normalization.
+
+### Flow 2: Recommendations (ML-Powered)
+```
+User on Recommender page
+  → Query input ("fresh citrus summer") OR seed bottle picker
+  → lib/api.ts (adds JWT)
+  → GET /recommendations?q=fresh+citrus+summer&k=10
+     OR
+     GET /recommendations?seed_bottle_id=123&k=10
+  → routers/recommendations.py
+     - Verify JWT
+     - Call intelligence/recommender.py
+       → Load pre-trained TF-IDF model from disk (artifacts/*.pkl)
+       → Run inference (vectorize query → cosine similarity)
+       → Return top k bottle IDs: [42, 128, 991, ...]
+     - For each bottle_id:
+       → Query Supabase: SELECT * FROM bottles WHERE original_index = ?
+       → normalize_bottle(row) via utils/bottle_normalizer.py
+     - Return { results: [Bottle, Bottle, ...] }
+  → Frontend receives typed response
+  → Render grid of FragranceCard components
+```
+
+**ML runs in-memory at runtime** — model is pre-trained offline by `scripts/train_recommender.py`.
+
+## Key Components & Responsibilities
+
+| Component | Responsibility | Dependencies |
+|---|---|---|
+| **Frontend: types/fragrance.ts** | Type definitions for `Bottle` and `BottleCard` | None (pure types) |
+| **Frontend: lib/api.ts** | JWT injection, authenticated fetch wrapper | Supabase client (`auth.getSession()`) |
+| **Frontend: FragranceCard** | Reusable card UI, emits `onOpen(bottle)` | types/fragrance.ts |
+| **Frontend: FragranceDetailModal** | Modal overlay for full bottle details | types/fragrance.ts, receives pre-fetched data |
+| **Frontend: FragranceModalContext** | Global modal state (`useFragranceModal()` hook) | FragranceDetailModal |
+| **Backend: routers/bottles.py** | Handles `/bottles` endpoint (search, filters) | Supabase DB, utils/bottle_normalizer.py |
+| **Backend: routers/recommendations.py** | Handles `/recommendations` endpoint | intelligence/recommender.py, Supabase DB, utils/bottle_normalizer.py |
+| **Backend: intelligence/recommender.py** | Loads TF-IDF model, runs inference | Pre-trained artifacts (*.pkl files) |
+| **Backend: utils/bottle_normalizer.py** | `normalize_bottle()` — converts DB row to API response | None (pure data transformation) |
+| **Scripts: train_recommender.py** | One-time training script (offline) | perfume_dataset_v1.csv |
+| **Supabase Auth** | Issues JWTs on login | Frontend login flow |
+| **Supabase Database** | Stores bottles, user_swipes, collections | Backend queries |
+
+## Data Contracts
+
+### Frontend ↔ Backend (API Response Format)
+```typescript
+// Frontend expects:
+{
+  bottle_id: number,        // Maps to backend original_index
+  brand: string,
+  name: string,             // Maps to backend perfume
+  image_url: string | null, // Maps to backend image_path
+  year: number | null,
+  gender: string | null,
+  rating_value: number | null,
+  rating_count: number | null,
+  main_accords: string[],   // Backend normalizes from comma-separated TEXT
+  notes: {                  // Backend splits top_notes, middle_notes, base_notes
+    top: string[],
+    middle: string[],
+    base: string[]
+  }
+}
+```
+
+### Backend ↔ Supabase (Database Schema)
+```sql
+-- bottles table columns:
+original_index INT PRIMARY KEY,
+brand TEXT,
+perfume TEXT,
+image_path TEXT,
+launch_year INT,
+gender TEXT,
+rating_value REAL,
+rating_count INT,
+main_accords TEXT,  -- Comma-separated: "woody,spicy,warm"
+top_notes TEXT,     -- Comma-separated
+middle_notes TEXT,
+base_notes TEXT
+```
+
+**Normalization step:** `utils/bottle_normalizer.py::normalize_bottle()` transforms:
+- `original_index` → `bottle_id`
+- `perfume` → `name`
+- `image_path` → `image_url`
+- `main_accords: "woody,spicy"` → `main_accords: ["woody", "spicy"]`
+- `top_notes, middle_notes, base_notes` → `notes: { top: [...], middle: [...], base: [...] }`
+
+## Authentication Flow (Supabase JWT)
+
+```
+User logs in
+  → Supabase Auth issues JWT (access_token, refresh_token)
+  → Frontend stores session in local storage (handled by Supabase client)
+
+User makes API request
+  → lib/api.ts calls supabase.auth.getSession()
+  → Extracts access_token from session
+  → Adds header: Authorization: Bearer <token>
+  → Backend receives request
+  → Backend verifies JWT signature using Supabase public key
+  → Extracts user_id from token payload
+  → Proceeds with query (can use user_id for personalized data)
+```
+
+**Token expiration:** Supabase tokens expire after ~1 hour. `lib/api.ts` should handle 401 responses by refreshing the token and retrying.
+
+## Training vs Runtime (ML Model)
+
+### Training (One-time, offline):
+```bash
+python scripts/train_recommender.py
+```
+**What it does:**
+1. Loads `perfume_dataset_v1.csv`
+2. Trains TF-IDF vectorizer on text features (brand, perfume, accords, notes)
+3. Computes TF-IDF matrix for all bottles
+4. Saves artifacts to disk:
+   - `intelligence/artifacts/tfidf_vectorizer.pkl`
+   - `intelligence/artifacts/tfidf_matrix.pkl`
+   - `intelligence/artifacts/bottle_ids.pkl`
+
+**When to re-run:** When new fragrances are added to the database, or when you want to retrain with different features.
+
+### Runtime (Every `/recommendations` request):
+```python
+# intelligence/recommender.py
+class Recommender:
+    def __init__(self):
+        # Load pre-trained artifacts (cached in memory)
+        self.vectorizer = pickle.load(...)
+        self.tfidf_matrix = pickle.load(...)
+        self.bottle_ids = pickle.load(...)
+
+    def get_recommendations(self, query_text: str, k: int):
+        # Vectorize query using pre-trained vectorizer
+        query_vec = self.vectorizer.transform([query_text])
+        # Compute cosine similarity with all bottles
+        similarities = cosine_similarity(query_vec, self.tfidf_matrix)
+        # Return top k bottle IDs
+        top_indices = similarities.argsort()[0][-k:][::-1]
+        return [self.bottle_ids[i] for i in top_indices]
+```
+
+**No training happens at runtime** — model is already trained and loaded from disk.
+
+## What I Learned About System Design
+
+### 1. Layer Separation is Critical
+- Frontend doesn't touch Supabase database directly (only via backend API)
+- Backend doesn't expose raw DB schema (normalizes via `utils/bottle_normalizer.py`)
+- ML model is encapsulated in `intelligence/` layer (backend routers don't know about TF-IDF internals)
+
+### 2. Authentication at the Edge
+- `lib/api.ts` is the **single point** where JWT is injected
+- All frontend code trusts that `apiGet()`/`apiPost()` are authenticated
+- Backend verifies on every request (stateless, no session storage)
+
+### 3. Data Normalization Prevents Coupling
+- If we change DB schema (`original_index` → `id`), we only update `utils/bottle_normalizer.py`
+- Frontend types stay stable
+- API contract is stable
+
+### 4. ML Artifacts Live on Disk, Not in Database
+- TF-IDF matrix is too large for Postgres TEXT column
+- Pickle files are fast to load (mmap), cached in memory
+- No DB queries needed for model inference (only for hydrating results)
+
+### 5. Type Safety Across Boundaries
+- TypeScript types (`types/fragrance.ts`) match normalized API response
+- Backend response matches frontend types (enforced by tests, ideally)
+- Prevents runtime errors from field name mismatches
+
+## Current Architectural Risks
+
+1. **Token refresh not implemented:**
+   - If user session expires during browsing, API calls will fail with 401
+   - **Mitigation:** Add retry logic in `lib/api.ts` that refreshes token and retries request
+
+2. **No caching strategy:**
+   - Every page navigation refetches data (e.g., clicking Explore → Recommender → Explore)
+   - **Mitigation:** Use React Query or SWR for client-side caching
+
+3. **Modal data staleness:**
+   - If backend data changes (e.g., rating updated), modal shows old data
+   - **Mitigation:** Option A (pass full object) is fine for v1; later, modal can refetch by `bottle_id`
+
+4. **No pagination on Explore:**
+   - If dataset grows to 10,000 bottles, `/bottles?limit=10000` will be slow
+   - **Mitigation:** Add pagination (`?page=1&limit=50`) or infinite scroll
+
+5. **ML model retraining process:**
+   - Currently manual (`python scripts/train_recommender.py`)
+   - **Future:** Automate retraining when new bottles are added (cron job, GitHub Action, etc.)
+
+6. **Image loading performance:**
+   - 50 bottles × 1 image = 50 network requests
+   - **Mitigation:** Next.js Image component already optimizes this (lazy loading, responsive sizes)
+
+## Next Steps
+
+1. Implement `lib/api.ts` (JWT wrapper)
+2. Build Swipe page (uses `/bottles/random`, `/swipe/candidates`, POST `/swipes`)
+3. Build Explore page (uses `/bottles`, opens modal on card click)
+4. Build Recommender page (uses `/recommendations`, opens modal on card click)
+5. Build Collections page (uses `/collections/*`, requires backend endpoints)
+6. Add token refresh logic to `lib/api.ts`
+7. Add error boundaries for graceful failure handling
+8. Write integration tests (Cypress/Playwright) for full user flows
+
+---
+
+# 2026-01-27 — Backend Contract Polish: Detail Endpoint + Collections API
+
+## Summary
+Completed a backend "contract polish + collections" pass to support frontend Bottle Detail modals and user-curated lists. Added missing fields to `normalize_bottle()`, created a single-bottle detail endpoint, standardized all list response envelopes, designed and implemented a collections data model with full CRUD.
+
+## Decisions
+- **Added `gender` and `country` to `normalize_bottle()`** so the detail modal has all metadata without a second endpoint or schema change.
+- **Standardized all list endpoints to `{ results: [...] }`** — `/recommendations`, `/swipe/candidates`, and `/bottles/random` now share the same envelope. Frontend can use one response type for all lists.
+- **Single `collections` table with `collection_type` column** (Option A) instead of three separate tables. All types (wishlist, favorites, personal) share identical structure, so one table with a CHECK constraint is simpler.
+- **`bottle_id` in collections is `original_index` (int), not FK to bottles.id (UUID)** — same pattern as swipes table. Avoids UUID/int mismatch and keeps ML compatibility.
+- **UNIQUE constraint on `(user_id, bottle_id, collection_type)`** — prevents duplicates at the database level and enables idempotent upsert on POST.
+- **Idempotent DELETE** — returns 200 even if entry didn't exist, so frontend can toggle state without checking existence first.
+- **GET /collections returns full normalized bottle cards** — two queries (collection rows then bottle details) so frontend can render immediately without a second fetch.
+
+## Pitfalls
+- **Upsert requires named conflict columns** — Supabase PostgREST's `on_conflict` parameter needs the exact column names matching the UNIQUE index, not the index name itself.
+- **GET /collections ordering** — must order by `created_at DESC` on the collections query (not the bottles query) to preserve "most recently added" order. The bottles fetch via `.in_()` returns arbitrary order, so we reconstruct using the lookup dict pattern.
+- **Response envelope inconsistency** — `/bottles/random` and `/swipe/candidates` were using `bottles` key while `/recommendations` used `results`. Standardizing to `results` is a breaking change for any frontend code already consuming the old key.
+
+## What I Learned
+- **Idempotent APIs simplify frontend state management.** When POST is a no-op on duplicates and DELETE succeeds even if nothing exists, the frontend doesn't need to track server state before making requests. Fire-and-forget.
+- **Single table with type column > multiple identical tables.** The collections use case seemed like it needed three tables, but since the schema is identical across types, one table with a CHECK constraint gives you fewer migrations, one set of indexes, and one router file.
+- **`normalize_bottle()` is the single source of truth for the API contract.** Every endpoint that returns bottle data passes through this function, so adding a field here (gender, country) propagates everywhere automatically. This is the payoff of the normalization layer architecture.
+
+## Next Steps
+1. Run `create_collections.sql` in Supabase Dashboard SQL Editor
+2. Test all three collection endpoints with curl/httpie (POST, GET, DELETE)
+3. Implement frontend Collection page consuming the new API
+4. Implement frontend Bottle Detail modal using `GET /bottles/{bottle_id}`
+5. Add `k` and `exclude_ids` params to `/swipe/candidates` for swipe queue polish
+
+---

@@ -45,6 +45,8 @@ def normalize_bottle(db_row: dict) -> dict:
         "id": db_row.get("original_index"),  # INT used by recommender, not UUID
         "name": db_row.get("name"),
         "brand": db_row.get("brand"),
+        "gender": db_row.get("gender"),  # ADD THIS LINE
+        "country": db_row.get("country"),
         "image_url": db_row.get("image_url"),
         "main_accords": main_accords,
         "notes_top": notes_top,

@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from supabase import create_client
 from core.config import settings
-from utils.bottles import normalize_bottle
+from utils.bottle_normalizer import normalize_bottle
 
 
 router = APIRouter()
@@ -61,5 +61,5 @@ async def get_swipe_candidates(
     return {
         "seed_bottle_id": seed_bottle_id,
         "count": len(results),
-        "bottles": results
+        "results": results
     }
