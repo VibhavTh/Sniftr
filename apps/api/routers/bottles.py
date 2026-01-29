@@ -3,13 +3,15 @@ Purpose:
 FastAPI router for bottle-related endpoints.
 
 Responsibilities:
-- Provide GET /bottles/random for fetching random bottles to seed swipe queue
+- Provide GET /bottles for paginated browse with optional search (Explore page)
+- Provide GET /bottles/random for random bottles to seed swipe queue
+- Provide GET /bottles/{bottle_id} for single bottle detail (modal)
 - Normalize bottle data into UI-ready format with arrays
 
 System context:
-- Random selection is not user-specific (no auth required for v1)
-- Used by frontend to initialize swipe queue before personalization kicks in
+- All endpoints are public (no auth required for v1)
 - Results normalized using utils.bottle_normalizer.normalize_bottle
+- Stable ordering on /bottles ensures deterministic pagination
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -20,6 +22,53 @@ from utils.bottle_normalizer import normalize_bottle
 
 
 router = APIRouter()
+
+
+# Paginated browse endpoint for Explore page.
+# Stable ordering ensures page 1/2/3 are deterministic across requests.
+# Optional q param filters by name OR brand (case-insensitive ilike).
+# IMPORTANT: This route MUST be defined before /bottles/{bottle_id} to avoid route conflict.
+@router.get("/bottles")
+async def get_bottles(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    limit: int = Query(24, ge=1, le=100, description="Items per page"),
+    q: str | None = Query(None, description="Search query (filters name/brand)")
+):
+    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+    # Calculate offset for Supabase .range() (0-indexed, inclusive on both ends)
+    offset = (page - 1) * limit
+
+    # Build query with count for pagination metadata
+    # count="exact" adds a header with total matching rows
+    query = supabase.table("bottles").select("*", count="exact")
+
+    # Optional search filter: name OR brand contains search term (case-insensitive)
+    # Using ilike for case-insensitive LIKE matching in PostgreSQL
+    if q and q.strip():
+        search_term = q.strip()
+        query = query.or_(f"name.ilike.%{search_term}%,brand.ilike.%{search_term}%")
+
+    # Apply stable ordering for deterministic pagination:
+    # 1. rating_count DESC → most reviewed first (popularity signal)
+    # 2. rating_value DESC → higher rated among same review count
+    # 3. original_index ASC → deterministic tiebreaker for identical ratings
+    response = query \
+        .order("rating_count", desc=True, nullsfirst=False) \
+        .order("rating_value", desc=True, nullsfirst=False) \
+        .order("original_index", desc=False) \
+        .range(offset, offset + limit - 1) \
+        .execute()
+
+    # Normalize results to UI format with arrays
+    results = [normalize_bottle(row) for row in response.data]
+
+    return {
+        "page": page,
+        "limit": limit,
+        "total": response.count,
+        "results": results
+    }
 
 
 # Fetch random bottles for initial swipe queue or exploration.

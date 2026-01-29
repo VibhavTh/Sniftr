@@ -1204,3 +1204,61 @@ Completed a backend "contract polish + collections" pass to support frontend Bot
 5. Add `k` and `exclude_ids` params to `/swipe/candidates` for swipe queue polish
 
 ---
+
+# 2026-01-29 — Paginated Browse Endpoint for Explore Page
+
+## Summary
+Implemented `GET /bottles` endpoint with pagination, search, and stable ordering. This powers the Explore page's "browse directory list" feature with deterministic results across page navigation.
+
+## Decisions
+- **Stable ordering: `rating_count DESC → rating_value DESC → original_index ASC`** — most reviewed bottles first (popularity signal), then higher rated among ties, then deterministic tiebreaker. Ensures page 1/2/3 are consistent across requests.
+- **Search uses `OR` with `ilike`** — `q` param filters bottles where name OR brand contains the search term (case-insensitive). Matches user mental model of "search everything".
+- **Response includes pagination metadata** — `{ page, limit, total, results }` so frontend can calculate total pages and show "X of Y" indicators.
+- **Supabase `.range()` is 0-indexed and inclusive on both ends** — `.range(0, 23)` returns 24 items (rows 0-23). Offset formula: `(page - 1) * limit`.
+- **Route ordering matters in FastAPI** — `GET /bottles` must be defined BEFORE `GET /bottles/{bottle_id}` to avoid the parameterized route capturing "random" as a bottle_id.
+
+## Implementation Details
+```python
+@router.get("/bottles")
+async def get_bottles(
+    page: int = Query(1, ge=1),
+    limit: int = Query(24, ge=1, le=100),
+    q: str | None = Query(None)
+):
+    offset = (page - 1) * limit
+    query = supabase.table("bottles").select("*", count="exact")
+
+    if q and q.strip():
+        query = query.or_(f"name.ilike.%{search_term}%,brand.ilike.%{search_term}%")
+
+    response = query \
+        .order("rating_count", desc=True, nullsfirst=False) \
+        .order("rating_value", desc=True, nullsfirst=False) \
+        .order("original_index", desc=False) \
+        .range(offset, offset + limit - 1) \
+        .execute()
+```
+
+## Pitfalls
+- **Supabase `count="exact"` adds overhead** — for large tables, consider using `count="estimated"` or removing count for non-first pages. For 24K bottles, exact count is acceptable.
+- **ilike with leading wildcard `%term%` can't use indexes** — full table scan on name/brand columns. For MVP this is fine, but at scale consider PostgreSQL full-text search (`to_tsvector`/`to_tsquery`).
+- **Ordering by nullable columns needs `nullsfirst=False`** — ensures NULL ratings sort to the end, not the beginning.
+
+## What I Learned
+- **Deterministic pagination requires multi-column ordering.** Single column ordering (e.g., just `rating_count DESC`) leaves rows with identical values in undefined order, causing bottles to appear on multiple pages or skip entirely.
+- **`count="exact"` in Supabase PostgREST** returns total matching rows in `response.count`, enabling frontend pagination controls without a separate COUNT query.
+- **FastAPI route ordering is positional.** The first matching route wins. `/bottles` defined after `/bottles/{bottle_id}` would never match because `{bottle_id}` captures any string including empty.
+
+## Test Results
+```
+Page 1: Alien (29858 reviews), Angel (29722), Light Blue (29708)
+Page 2: Coco Mademoiselle (29283), La Vie Est Belle (28982), Black Orchid (26053)
+Search "dior": 196 matches — Hypnotic Poison, J'Adore, Sauvage, Fahrenheit...
+```
+
+## Next Steps
+1. Commit and push the paginated browse endpoint
+2. Consider adding sort param (e.g., `sort=newest`, `sort=rating`) for future flexibility
+3. Implement frontend Explore page consuming this endpoint with infinite scroll
+
+---
