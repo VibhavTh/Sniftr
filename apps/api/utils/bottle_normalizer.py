@@ -21,6 +21,17 @@ def split_comma_separated(text: str | None) -> list[str]:
     return [item.strip() for item in text.split(',') if item.strip()]
 
 
+# Sanitize image_url field - return None for invalid/placeholder values.
+# Database may contain 'NOT_FOUND' or other non-URL strings from scraping failures.
+def sanitize_image_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    # Must start with http:// or https:// to be a valid URL
+    if not url.startswith(('http://', 'https://')):
+        return None
+    return url
+
+
 # Transform raw Supabase row into UI-ready bottle card with arrays for accords and notes.
 # Bridges the gap between database schema (accord1..5 columns, comma-separated notes)
 # and API contract (main_accords[], notes_top[], notes_middle[], notes_base[]).
@@ -42,16 +53,18 @@ def normalize_bottle(db_row: dict) -> dict:
     notes_base = split_comma_separated(db_row.get("notes_base"))
 
     return {
-        "id": db_row.get("original_index"),  # INT used by recommender, not UUID
+        "bottle_id": db_row.get("original_index"),  # INT used by recommender, not UUID
         "name": db_row.get("name"),
         "brand": db_row.get("brand"),
-        "gender": db_row.get("gender"),  # ADD THIS LINE
+        "gender": db_row.get("gender"),
         "country": db_row.get("country"),
-        "image_url": db_row.get("image_url"),
+        "image_url": sanitize_image_url(db_row.get("image_url")),
         "main_accords": main_accords,
-        "notes_top": notes_top,
-        "notes_middle": notes_middle,
-        "notes_base": notes_base,
+        "notes": {
+            "top": notes_top,
+            "middle": notes_middle,
+            "base": notes_base,
+        },
         "rating_value": db_row.get("rating_value"),
         "rating_count": db_row.get("rating_count"),
         "year": db_row.get("year"),

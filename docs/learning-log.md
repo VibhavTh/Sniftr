@@ -1262,3 +1262,41 @@ Search "dior": 196 matches — Hypnotic Poison, J'Adore, Sauvage, Fahrenheit...
 3. Implement frontend Explore page consuming this endpoint with infinite scroll
 
 ---
+
+# 2026-01-29 — Frontend Browse Page: Real API Wiring + Design System Fix
+
+## Summary
+Wired the Browse (Explore) page to the real `GET /bottles` API endpoint with search, pagination, and global modal integration. Fixed API contract mismatch between backend normalizer and frontend types. Removed all `rounded-*` classes per design protocol (no rounded corners).
+
+## Decisions
+- **Changed backend `normalize_bottle()` to return `bottle_id` instead of `id`** — frontend `Fragrance` type expects `bottle_id`, and all backend endpoints accept `bottle_id` as input. Keeping consistent naming across the contract.
+- **Nested notes in API response** — changed from flat `notes_top`, `notes_middle`, `notes_base` to nested `notes: { top, middle, base }` to match frontend type definition.
+- **Used full `Fragrance` type in FragranceCard** — changed from `FragranceCard` type (Pick) to full `Fragrance` so the modal can receive complete data without a separate fetch.
+- **Debounced search input (300ms)** — prevents API spam during typing. Resets pagination when search query changes.
+- **4-column grid on XL screens** — added `xl:grid-cols-4` for better use of wide screens while maintaining 3-column on lg.
+
+## Pitfalls
+- **Backend/Frontend contract mismatch** — backend returned `id` but frontend expected `bottle_id`. TypeScript caught this during development. Lesson: keep a single source of truth for API types (ideally generated from OpenAPI spec).
+- **Notes structure mismatch** — backend returned flat `notes_top: []` but frontend expected nested `notes: { top: [] }`. Required backend normalizer change.
+- **Rounded corners throughout** — design protocol requires NO rounded corners, but components had `rounded-full`, `rounded-lg`, `rounded-2xl`. Had to audit and remove from:
+  - FragranceCard: gender badge, accord pills
+  - FragranceDetailModal: container, close button, gender badge, accord pills, note pills, action buttons
+
+## What I Learned
+- **Type mismatches surface at compile time in TypeScript** — the error "Type 'FragranceCard' is missing properties 'year', 'rating_count' from type 'Fragrance'" immediately pointed to the API contract issue.
+- **Global modal pattern works well** — `FragranceModalProvider` in root layout + `useFragranceModal()` hook means any page can open the detail modal with one function call.
+- **Debounced search needs pagination reset** — when search query changes, must reset to page 1 and clear existing results to avoid mixing old and new data.
+
+## Files Changed
+- `apps/api/utils/bottle_normalizer.py` — `id` → `bottle_id`, nested `notes` object
+- `apps/web/components/FragranceCard.tsx` — use `Fragrance` type, remove `rounded-full`
+- `apps/web/components/FragranceDetailModal.tsx` — remove all `rounded-*` classes
+- `apps/web/app/browse/page.tsx` — real API integration with search + pagination
+
+## Next Steps
+1. Test Browse page with dev server running both frontend and backend
+2. Wire Finder (swipe) page to `/bottles/random` and `/swipe/candidates`
+3. Wire Collection page to `/collections` endpoints
+4. Add error boundary for graceful API failure handling
+
+---

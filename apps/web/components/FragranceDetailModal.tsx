@@ -44,13 +44,13 @@ export default function FragranceDetailModal({
       onClick={onClose} // Click outside to close
     >
       <div
-        className="relative w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="relative w-full max-w-2xl overflow-hidden bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()} // Prevent close when clicking inside
       >
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-gray-600 shadow-md hover:bg-white transition-colors"
+          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center bg-white/90 text-gray-600 shadow-md hover:bg-white transition-colors"
           aria-label="Close"
         >
           ✕
@@ -67,6 +67,7 @@ export default function FragranceDetailModal({
                 fill
                 className="object-cover"
                 priority
+                unoptimized
               />
             ) : (
               <div className="flex h-full items-center justify-center">
@@ -78,7 +79,7 @@ export default function FragranceDetailModal({
 
             {/* Gender badge overlay */}
             {fragrance.gender && (
-              <span className={`absolute right-4 top-4 rounded-full px-3 py-1.5 text-sm ${
+              <span className={`absolute right-4 top-4 px-3 py-1.5 text-sm ${
                 fragrance.gender.toLowerCase() === 'women'
                   ? 'bg-pink-100 text-pink-700'
                   : fragrance.gender.toLowerCase() === 'unisex'
@@ -138,7 +139,7 @@ export default function FragranceDetailModal({
                   {fragrance.main_accords.map((accord, idx) => (
                     <span
                       key={idx}
-                      className={`rounded-full px-4 py-1.5 text-sm capitalize ${getAccordColor(accord)}`}
+                      className={`px-4 py-1.5 text-sm capitalize ${getAccordColor(accord)}`}
                     >
                       {accord.toLowerCase()}
                     </span>
@@ -162,7 +163,7 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
                             {note}
@@ -185,7 +186,7 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
                             {note}
@@ -208,7 +209,7 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
                             {note}
@@ -232,7 +233,7 @@ export default function FragranceDetailModal({
                   onPass(fragrance.bottle_id)
                   onClose()
                 }}
-                className="flex-1 rounded-lg border border-gray-300 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                className="flex-1 border border-gray-300 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
               >
                 ✕ Pass
               </button>
@@ -243,7 +244,7 @@ export default function FragranceDetailModal({
                   onLike(fragrance.bottle_id)
                   onClose()
                 }}
-                className="flex-1 rounded-lg bg-black py-3 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+                className="flex-1 bg-black py-3 text-sm font-medium text-white transition-colors hover:bg-gray-800"
               >
                 ♥ Like
               </button>

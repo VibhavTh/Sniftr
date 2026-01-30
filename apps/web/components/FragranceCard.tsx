@@ -1,11 +1,11 @@
 // components/FragranceCard.tsx
-import { FragranceCard as FragranceCardType } from '@/types/fragrance'
+import { Fragrance } from '@/types/fragrance'
 import { getAccordColor } from '@/lib/fragrance-colors'
 import Image from 'next/image'
 
 interface FragranceCardProps {
-  fragrance: FragranceCardType
-  onOpen: (fragrance: FragranceCardType) => void
+  fragrance: Fragrance
+  onOpen: (fragrance: Fragrance) => void
 }
 
 export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps) {
@@ -22,6 +22,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
             alt={`${fragrance.brand} ${fragrance.name}`}
             fill
             className="object-cover"
+            unoptimized
           />
         ) : (
           <div className="flex h-full items-center justify-center">
@@ -33,7 +34,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
 
         {/* Gender badge (top-right) */}
         {fragrance.gender && (
-          <span className={`absolute right-2 top-2 rounded-full px-2.5 py-1 text-xs ${
+          <span className={`absolute right-2 top-2 px-2.5 py-1 text-xs ${
             fragrance.gender.toLowerCase() === 'women'
               ? 'bg-pink-100 text-pink-700'
               : fragrance.gender.toLowerCase() === 'unisex'
@@ -63,7 +64,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
             {fragrance.main_accords.slice(0, 3).map((accord, idx) => (
               <span
                 key={idx}
-                className={`rounded-full px-2.5 py-1 text-xs capitalize ${getAccordColor(accord)}`}
+                className={`px-2.5 py-1 text-xs capitalize ${getAccordColor(accord)}`}
               >
                 {accord.toLowerCase()}
               </span>
