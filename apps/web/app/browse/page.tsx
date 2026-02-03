@@ -34,20 +34,24 @@ export default function BrowsePage() {
   const [total, setTotal] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [isSearching, setIsSearching] = useState(false)
 
   // Debounce search input (300ms)
   useEffect(() => {
+    // Show searching indicator while typing (only if query changed)
+    if (searchQuery !== debouncedQuery) {
+      setIsSearching(true)
+    }
     const timer = setTimeout(() => {
       setDebouncedQuery(searchQuery)
     }, 300)
     return () => clearTimeout(timer)
-  }, [searchQuery])
+  }, [searchQuery, debouncedQuery])
 
-  // Reset pagination when search changes
+  // Reset pagination when search changes (but don't clear results or show full loading)
   useEffect(() => {
     setPage(1)
-    setBottles([])
-    setLoading(true)
+    // Don't setBottles([]) or setLoading(true) — keep current results visible during fetch
   }, [debouncedQuery])
 
   // Fetch bottles from API
@@ -60,7 +64,7 @@ export default function BrowsePage() {
       if (query.trim()) {
         params.set('q', query.trim())
       }
-
+      // actual data in normalized bottle array format using get_bottle function which in turn uses normalize_bottle function
       const data = await apiGet<BottlesResponse>(`/bottles?${params.toString()}`)
       setError(null)
       setTotal(data.total)
@@ -75,6 +79,7 @@ export default function BrowsePage() {
     } finally {
       setLoading(false)
       setLoadingMore(false)
+      setIsSearching(false)
     }
   }, [])
 
@@ -193,7 +198,13 @@ export default function BrowsePage() {
         {/* Results count when searching */}
         {debouncedQuery && (
           <p className="mb-8 text-[13px] font-light text-neutral-500">
-            {total.toLocaleString()} results for "{debouncedQuery}"
+            {isSearching ? 'Searching...' : `${total.toLocaleString()} results for "${debouncedQuery}"`}
+          </p>
+        )}
+        {/* Searching indicator when no committed query yet */}
+        {!debouncedQuery && isSearching && (
+          <p className="mb-8 text-[13px] font-light text-neutral-400">
+            Searching...
           </p>
         )}
 

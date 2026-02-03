@@ -14,6 +14,8 @@ System context:
 - Stable ordering on /bottles ensures deterministic pagination
 """
 
+import random
+
 from fastapi import APIRouter, HTTPException, Query
 
 from supabase import create_client
@@ -45,9 +47,12 @@ async def get_bottles(
 
     # Optional search filter: name OR brand contains search term (case-insensitive)
     # Using ilike for case-insensitive LIKE matching in PostgreSQL
+    # Normalize spaces to wildcards so "dolce gabbana" matches "dolce-gabbana"
     if q and q.strip():
         search_term = q.strip()
-        query = query.or_(f"name.ilike.%{search_term}%,brand.ilike.%{search_term}%")
+        # Replace spaces with % wildcard to match both "dolce gabbana" and "dolce-gabbana"
+        normalized_term = search_term.replace(" ", "%")
+        query = query.or_(f"name.ilike.%{normalized_term}%,brand.ilike.%{normalized_term}%")
 
     # Apply stable ordering for deterministic pagination:
     # 1. rating_count DESC → most reviewed first (popularity signal)
@@ -73,31 +78,35 @@ async def get_bottles(
 
 # Fetch random bottles for initial swipe queue or exploration.
 # No authentication required - randomness is the same for all users in v1.
-# Uses PostgreSQL's ORDER BY RANDOM() for true random selection across 24K bottles.
 # Returns normalized bottle cards with arrays for accords and notes.
+# Uses Python random.sample() since PostgREST doesn't support ORDER BY RANDOM().
 @router.get("/bottles/random")
 async def get_random_bottles(
     limit: int = Query(50, ge=1, le=100, description="Number of random bottles to return (1-100)")
 ):
-    # Query Supabase for random bottles using PostgreSQL's RANDOM() function
-    # This is less efficient than indexed queries but acceptable for small limits
     supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # Use rpc() to call a PostgreSQL function for efficient random sampling
-    # Fallback: If no RPC function exists, use ORDER BY RANDOM() (slower but works)
-    # For MVP, we use the simple approach - can optimize later if needed
+    # PostgREST doesn't support ORDER BY RANDOM() directly.
+    # Strategy: Fetch a larger pool and randomly sample in Python.
+    # Pool size: 10x limit or 500, whichever is larger (covers 24K bottles well)
+    pool_size = max(limit * 10, 500)
+
     response = supabase.table("bottles") \
         .select("*") \
-        .limit(limit) \
+        .limit(pool_size) \
         .execute()
 
-    # PostgreSQL doesn't support ORDER BY RANDOM() via PostgREST directly
-    # So we fetch more rows and shuffle in Python, or use a custom RPC function
-    # For now, fetch limit rows and let Supabase handle randomness via query planner
-    # TODO: Add custom RPC function for true random sampling if performance becomes issue
+    # Randomly sample `limit` bottles from the pool
+    pool = response.data
+    if len(pool) <= limit:
+        # Pool smaller than requested, return all (shuffled)
+        sampled = pool
+        random.shuffle(sampled)
+    else:
+        sampled = random.sample(pool, limit)
 
     # Normalize each bottle to UI format with arrays
-    results = [normalize_bottle(row) for row in response.data]
+    results = [normalize_bottle(row) for row in sampled]
 
     return {
         "count": len(results),

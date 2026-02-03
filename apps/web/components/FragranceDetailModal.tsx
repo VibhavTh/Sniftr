@@ -2,9 +2,10 @@
 'use client'
 
 import { Fragrance } from '@/types/fragrance'
-import { getAccordColor, getNoteColor, getNoteEmoji } from '@/lib/fragrance-colors'
+import { getAccordColor, getNoteEmoji, formatDisplayText } from '@/lib/fragrance-colors'
+import { useCollections } from '@/contexts/CollectionsContext'
 import Image from 'next/image'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 interface FragranceDetailModalProps {
   fragrance: Fragrance | null
@@ -21,6 +22,48 @@ export default function FragranceDetailModal({
   onLike,
   onPass,
 }: FragranceDetailModalProps) {
+  const { getStatus, fetchStatus, toggleFavorite, setCollection } = useCollections()
+  const [status, setStatus] = useState({ favorites: false, wishlist: false, personal: false })
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+
+  // Fetch collection status when modal opens
+  useEffect(() => {
+    if (isOpen && fragrance) {
+      fetchStatus(fragrance.bottle_id).then(setStatus)
+    }
+    if (!isOpen) {
+      setDropdownOpen(false)
+    }
+  }, [isOpen, fragrance, fetchStatus])
+
+  // Sync with cache
+  useEffect(() => {
+    if (fragrance) {
+      setStatus(getStatus(fragrance.bottle_id))
+    }
+  }, [getStatus, fragrance])
+
+  const handleToggleFavorite = async () => {
+    if (!fragrance) return
+    try {
+      await toggleFavorite(fragrance.bottle_id)
+      setStatus(prev => ({ ...prev, favorites: !prev.favorites }))
+    } catch {
+      // Error logged in context
+    }
+  }
+
+  const handleToggleCollection = async (type: 'wishlist' | 'personal') => {
+    if (!fragrance) return
+    const newValue = !status[type]
+    try {
+      await setCollection(type, fragrance.bottle_id, newValue)
+      setStatus(prev => ({ ...prev, [type]: newValue }))
+    } catch {
+      // Error logged in context
+    }
+  }
+
   // ESC key to close
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -86,21 +129,31 @@ export default function FragranceDetailModal({
                   ? 'bg-purple-100 text-purple-700'
                   : 'bg-blue-100 text-blue-700'
               }`}>
-                {fragrance.gender}
+                {formatDisplayText(fragrance.gender)}
               </span>
             )}
           </div>
 
           {/* Content */}
           <div className="p-8 space-y-6">
-            {/* Name (large serif) */}
-            <h2 className="font-serif text-4xl leading-tight text-gray-900">
-              {fragrance.name}
-            </h2>
+            {/* Name row with heart */}
+            <div className="flex items-start justify-between gap-4">
+              <h2 className="font-serif text-4xl leading-tight text-gray-900">
+                {formatDisplayText(fragrance.name)}
+              </h2>
+              <button
+                onClick={handleToggleFavorite}
+                className="flex-shrink-0 flex h-10 w-10 items-center justify-center border border-gray-200 text-xl transition-colors hover:bg-gray-50"
+                aria-label={status.favorites ? 'Remove from Favorites' : 'Add to Favorites'}
+                title={status.favorites ? 'Remove from Favorites' : 'Add to Favorites'}
+              >
+                {status.favorites ? '♥' : '♡'}
+              </button>
+            </div>
 
             {/* Brand */}
             <p className="text-lg text-gray-600">
-              by {fragrance.brand}
+              by {formatDisplayText(fragrance.brand)}
             </p>
 
             {/* Meta row: Year, Rating */}
@@ -123,7 +176,7 @@ export default function FragranceDetailModal({
                 <div>
                   <span className="text-gray-500">For</span>
                   <p className="font-semibold text-gray-900 capitalize">
-                    {fragrance.gender}
+                    {formatDisplayText(fragrance.gender)}
                   </p>
                 </div>
               )}
@@ -141,7 +194,7 @@ export default function FragranceDetailModal({
                       key={idx}
                       className={`px-4 py-1.5 text-sm capitalize ${getAccordColor(accord)}`}
                     >
-                      {accord.toLowerCase()}
+                      {formatDisplayText(accord.toLowerCase())}
                     </span>
                   ))}
                 </div>
@@ -163,10 +216,10 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className="inline-flex items-center gap-2 px-3 py-2 text-sm bg-white border border-neutral-200 text-neutral-700"
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
-                            {note}
+                            {formatDisplayText(note)}
                           </span>
                         )
                       })}
@@ -186,10 +239,10 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className="inline-flex items-center gap-2 px-3 py-2 text-sm bg-white border border-neutral-200 text-neutral-700"
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
-                            {note}
+                            {formatDisplayText(note)}
                           </span>
                         )
                       })}
@@ -209,10 +262,10 @@ export default function FragranceDetailModal({
                         return (
                           <span
                             key={idx}
-                            className={`inline-flex items-center gap-2 px-3 py-2 text-sm ${getNoteColor(note)}`}
+                            className="inline-flex items-center gap-2 px-3 py-2 text-sm bg-white border border-neutral-200 text-neutral-700"
                           >
                             {emoji && <span className="text-lg">{emoji}</span>}
-                            {note}
+                            {formatDisplayText(note)}
                           </span>
                         )
                       })}
@@ -225,32 +278,65 @@ export default function FragranceDetailModal({
         </div>
 
         {/* Action buttons (fixed at bottom) */}
-        {(onLike || onPass) && (
-          <div className="flex gap-3 border-t bg-white p-6">
-            {onPass && (
-              <button
-                onClick={() => {
-                  onPass(fragrance.bottle_id)
-                  onClose()
-                }}
-                className="flex-1 border border-gray-300 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-              >
-                ✕ Pass
-              </button>
-            )}
-            {onLike && (
-              <button
-                onClick={() => {
-                  onLike(fragrance.bottle_id)
-                  onClose()
-                }}
-                className="flex-1 bg-black py-3 text-sm font-medium text-white transition-colors hover:bg-gray-800"
-              >
-                ♥ Like
-              </button>
+        <div className="border-t bg-white p-6 space-y-3">
+          {/* Add to collections dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              className="w-full flex items-center justify-center gap-2 border border-gray-300 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              Add to Collections
+              <span className={`transition-transform ${dropdownOpen ? 'rotate-180' : ''}`}>▾</span>
+            </button>
+
+            {dropdownOpen && (
+              <div className="absolute bottom-full left-0 right-0 mb-1 bg-white border border-gray-200 shadow-lg">
+                <button
+                  onClick={() => handleToggleCollection('wishlist')}
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-left hover:bg-gray-50 transition-colors"
+                >
+                  <span>Wishlist</span>
+                  <span className="text-lg">{status.wishlist ? '✓' : ''}</span>
+                </button>
+                <button
+                  onClick={() => handleToggleCollection('personal')}
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-left hover:bg-gray-50 transition-colors border-t border-gray-100"
+                >
+                  <span>Personal Collection</span>
+                  <span className="text-lg">{status.personal ? '✓' : ''}</span>
+                </button>
+              </div>
             )}
           </div>
-        )}
+
+          {/* Pass/Like buttons (if provided) */}
+          {(onLike || onPass) && (
+            <div className="flex gap-3">
+              {onPass && (
+                <button
+                  onClick={() => {
+                    onPass(fragrance.bottle_id)
+                    onClose()
+                  }}
+                  className="flex-1 border border-gray-300 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                >
+                  ✕ Pass
+                </button>
+              )}
+              {onLike && (
+                <button
+                  onClick={() => {
+                    onLike(fragrance.bottle_id)
+                    onClose()
+                  }}
+                  className="flex-1 bg-black py-3 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+                >
+                  ♥ Like
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -1300,3 +1300,357 @@ Wired the Browse (Explore) page to the real `GET /bottles` API endpoint with sea
 4. Add error boundary for graceful API failure handling
 
 ---
+
+# 2026-01-30 — Browse Search UX Fix + Note Color Simplification
+
+## Summary
+Fixed two UX issues: (1) eliminated jarring full-page loading flash during search typing by keeping current results visible during fetch, (2) simplified note display to neutral styling while preserving color only for accords and gender badges.
+
+## Decisions
+- **Keep results visible during search** — Instead of clearing `bottles` array and showing loading state on every debounced query change, we now keep the current results visible and only show a subtle "Searching..." text indicator. Full loading state only appears on initial page load when `bottles.length === 0`.
+- **Neutral note styling** — Notes now use `bg-white border border-neutral-200 text-neutral-700` instead of colorful backgrounds from `getNoteColor()`. This creates clearer visual hierarchy where accords "pop" with color while notes remain informational but subdued.
+- **Keep note emojis** — `getNoteEmoji()` is still used for visual interest without overwhelming color.
+
+## Pitfalls
+- **Removing `setBottles([])` changes behavior** — The original code cleared results on search to prevent mixing old/new data. By keeping results visible, there's a brief moment where old results show before new ones arrive. This is acceptable UX (feels like "updating" rather than "loading from scratch").
+- **`isSearching` state management** — Had to remember to clear it in the fetch `finally` block, not just on success.
+
+## What I Learned
+- **Loading states should match user mental model** — Users typing in search expect results to update, not disappear. The loading flash felt like "app is broken" rather than "app is working."
+- **Color hierarchy matters** — When everything is colorful, nothing stands out. By making notes neutral, the accord chips become the focal point as intended.
+- **Debounce alone doesn't fix loading UX** — The debounce was already there; the problem was the aggressive state reset on query change.
+
+## Files Changed
+- `apps/web/app/browse/page.tsx` — Added `isSearching` state, removed `setBottles([])` and `setLoading(true)` from search effect, added inline search indicator
+- `apps/web/components/FragranceDetailModal.tsx` — Removed `getNoteColor` import, changed note chips to neutral styling
+
+## Next Steps
+1. Wire Finder page to real API (`/bottles/random`, `/swipe/candidates`, `POST /swipes`)
+2. Wire Collection page to `/collections` endpoints
+3. Consider if note emojis are still valuable or should be removed for cleaner look
+
+---
+
+# 2026-01-30 — Collections Status Endpoint for UX Support
+
+## Summary
+Added `GET /collections/status?bottle_id=<int>` endpoint to check whether a bottle exists in each collection type (wishlist, favorites, personal). Returns boolean flags so the frontend can render filled/unfilled hearts and dropdown toggles without fetching full collection data.
+
+## Decisions
+- **Query param instead of path param** — Used `?bottle_id=` instead of `/status/{bottle_id}` to keep the URL semantically clear (status is a resource property, not a sub-resource).
+- **Return all three booleans always** — Even if bottle is in no collections, return `{ wishlist: false, favorites: false, personal: false }` instead of empty object. This makes frontend logic simpler (no null checks).
+- **Single query, set-based lookup** — Query returns 0-3 rows (one per collection type). Convert to set for O(1) membership checks when building response.
+- **No validation on bottle_id existence** — If bottle doesn't exist in bottles table, endpoint still works (returns all false). This is intentional — checking bottle existence would add latency for no UX benefit.
+
+## Pitfalls
+- **Route ordering** — `GET /collections/status` must be defined before `GET /collections` in FastAPI to avoid the query-param route capturing `/status` as a type value. In this case it's not an issue since `/collections/status` is a distinct static path, but worth noting for future routes.
+
+## What I Learned
+- **Membership-check endpoints are common UX patterns.** Instead of fetching entire collections and filtering client-side, a dedicated status endpoint is faster and uses less bandwidth. This pattern scales well — even if user has 1000 items in wishlist, status check is still O(1).
+- **INSTRUCTOR MODE is effective** — Providing a starter kit with route signature + core logic + connection notes lets the user understand the pattern before implementation. The checklist + risks format catches edge cases early.
+
+## Files Changed
+- `apps/api/routers/collections.py` — Added `GET /collections/status` endpoint
+- `docs/agent/API_CONTRACT.md` — Documented new endpoint
+
+## Next Steps
+1. Wire frontend Collection page to use `/collections/status` for heart toggle state
+2. Wire Finder page swipe actions to POST /swipes
+3. Add optimistic UI updates for collection toggles (update heart immediately, revert on error)
+
+---
+
+# 2026-01-30 — Collections UX: Context, Modal Heart, and Dropdown
+
+## Summary
+Implemented full Collections UX with global state management. Created `CollectionsContext` for caching collection status by bottle_id, added heart toggle and "Add to collections" dropdown to `FragranceDetailModal`, and wired Collection page to real API with tabs for favorites/wishlist/personal.
+
+## Decisions
+- **CollectionsContext with optimistic updates** — Cache collection status (`{ favorites, wishlist, personal }`) by bottle_id. Toggle actions update cache immediately, then fire API call. Revert on error. This provides instant UI feedback.
+- **Heart button in content area, not image overlay** — Placed heart across from the fragrance name in the modal content section, not floating over the image. This is cleaner for the editorial design and avoids conflict with gender badge.
+- **"Add to collections" dropdown opens upward** — Used `bottom-full` positioning so dropdown appears above the button, avoiding overflow issues in the modal's scrollable area.
+- **Collection page uses tabs** — Three tabs (Favorites, Wishlist, Personal) instead of three separate pages. Tab state triggers refetch on change. Matches common UX pattern for grouped collections.
+- **Added `apiDelete` to lib/api.ts** — DELETE endpoint wasn't covered by existing helpers. Added for consistency with apiGet/apiPost pattern.
+
+## Pitfalls
+- **Dropdown needs click-outside handling (deferred)** — Currently dropdown only closes when clicking items or toggling button. Full implementation would add `useClickOutside` hook, but deferred for v1.
+- **Auth errors on collection endpoints** — If user isn't logged in, `/collections` endpoints return 401. Context handles this gracefully by returning default `{ favorites: false, wishlist: false, personal: false }`.
+- **Supabase session may expire** — Long sessions could hit 401 mid-browsing. Context catches these errors but doesn't trigger login redirect. Future: add auth state listener.
+
+## What I Learned
+- **Context + optimistic updates > prop drilling** — CollectionsContext provides single source of truth for collection state. Any component can toggle favorites without knowing about API details.
+- **Dropdown positioning in modals is tricky** — Using `position: absolute` with `bottom-full` positions relative to the button container, which works inside scrollable content.
+- **Idempotent APIs simplify toggle logic** — POST/DELETE being idempotent means we don't need to check current state before calling. Just call the appropriate action based on desired state.
+
+## Files Changed
+- `apps/web/lib/api.ts` — Added `apiDelete` function
+- `apps/web/contexts/CollectionsContext.tsx` — New file: cache status, getStatus, toggleFavorite, setCollection
+- `apps/web/app/layout.tsx` — Added `CollectionsProvider` wrapping app
+- `apps/web/components/FragranceDetailModal.tsx` — Added heart toggle + collections dropdown
+- `apps/web/app/collection/page.tsx` — Rewrote with tabs, real API, `FragranceCard` grid
+
+## Next Steps
+1. Wire Finder page to `/bottles/random` and `/swipe/candidates`
+2. Add click-outside handling for dropdown
+3. Add loading state to heart/dropdown during API calls
+4. Consider prefetching collection status for visible cards
+
+---
+
+# 2026-02-01 — Swipe/Finder MVP: Infinite Queue + Personalization
+
+## Summary
+Implemented the Swipe/Finder MVP page with real API integration. Features infinite queue management using `/bottles/random` (cold start) and `/swipe/candidates` (personalized), Like/Pass actions that log to backend, auto-add to favorites on Like, and localStorage persistence for personalization seed.
+
+## Decisions
+- **Infinite queue pattern** — Instead of loading all bottles upfront, maintain a queue that auto-refetches when below 5 remaining. This provides seamless UX without loading delays.
+- **localStorage for personalization seed** — Store `lastLikedBottleId` in localStorage so returning users get personalized recommendations immediately. No backend session required for v1.
+- **Fire-and-forget API calls** — Swipe logging (`POST /swipes`) and favorites add (`POST /collections`) don't block UI. Log errors to console but don't interrupt the swipe flow.
+- **Deduplication via Set** — Track `swipedIds` in state to prevent showing the same bottle twice when refetching adds overlapping results.
+- **Auth-aware UI** — Check Supabase session and show appropriate message for unauthenticated users. Swipe logging only fires when authenticated.
+- **Card click opens modal** — Entire card is clickable to open `FragranceDetailModal` for full details before deciding to Like/Pass.
+
+## Implementation Details
+```typescript
+// Queue management hooks
+const [queue, setQueue] = useState<Fragrance[]>([])
+const [currentIndex, setCurrentIndex] = useState(0)
+const [swipedIds, setSwipedIds] = useState<Set<number>>(new Set())
+
+// Personalization seed
+const LOCALSTORAGE_KEY = 'scentlymax_lastLikedBottleId'
+
+// Cold start vs personalized fetch
+const storedId = localStorage.getItem(LOCALSTORAGE_KEY)
+if (storedId) {
+  bottles = await fetchCandidates(parseInt(storedId, 10))
+} else {
+  bottles = await fetchRandomBottles()
+}
+
+// Auto-refetch when queue runs low
+useEffect(() => {
+  const remainingInQueue = queue.length - currentIndex
+  if (remainingInQueue <= 5 && !isFetching) {
+    // Fetch more and filter out already-swiped
+    const newBottles = await fetchCandidates(lastLikedId)
+    addToQueue(newBottles, swipedIds)
+  }
+}, [queue.length, currentIndex])
+```
+
+## Pitfalls
+- **`getAccordColor` returns string, not object** — Initially tried to destructure `{ bg, text }` from the function, but it returns a Tailwind class string like `'bg-amber-100 text-amber-800'`. Fixed by using directly in className.
+- **Auth state race condition** — Initial auth check via `getSession()` might not complete before first render. Added loading state to prevent flash of "not authenticated" message.
+- **Queue exhaustion** — If user swipes through all bottles and refetch returns duplicates (all filtered out), queue becomes empty. Added empty state UI with links to Explore and Profile.
+
+## What I Learned
+- **Infinite scroll/queue is simpler than pagination for swipe UX.** Users don't think in "pages" when swiping—they expect continuous flow. The refetch-on-low-threshold pattern provides this naturally.
+- **localStorage is sufficient for session-less personalization.** For v1, storing the last liked bottle_id provides enough signal for the ML recommender without needing user accounts or backend sessions.
+- **Fire-and-forget with error logging is acceptable for analytics.** Swipe logging is nice-to-have data, not critical path. If it fails, don't break the UX—just log and continue.
+- **FastAPI extracts query params automatically.** The `Query()` decorator builds a schema at startup, then FastAPI parses the URL, type-converts, validates, and injects as function arguments. The HTTP→Python translation is handled entirely by the framework.
+
+## Files Changed
+- `apps/web/app/finder/page.tsx` — Complete rewrite with real API integration
+- `apps/api/routers/bottles.py` — Search normalization (spaces → wildcards)
+- `docs/agent/FILE_MAP.md` — Updated page statuses
+- `docs/agent/WORKFLOW.md` — Added Swipe workflow section
+
+## Next Steps
+1. Add swipe animations (card slide left/right on Pass/Like)
+2. Add undo functionality for accidental swipes
+3. Consider prefetching next batch while user is viewing current card
+4. Add keyboard shortcuts (left arrow = Pass, right arrow = Like)
+
+---
+
+# 2026-01-30 — Profile Dashboard + Dedicated Collection Grid Pages
+
+## Summary
+Restructured collections UX from a tabbed page into a Profile dashboard matching the design template, plus three dedicated grid pages for each collection type (Favorites, Wishlist, Personal).
+
+## Decisions
+- **Profile dashboard at `/collection`** — Transformed the tabbed collection view into a dashboard with stat cards, navigation cards, and recent favorites list. Keeps the URL familiar while changing the UX.
+- **Dedicated grid pages at `/collection/{type}`** — Created `/collection/favorites`, `/collection/wishlist`, `/collection/personal` as separate routes. Each fetches its own collection type and renders a FragranceCard grid.
+- **Stat cards derive counts from API** — "Fragrances Tried" shows sum of all collections. "Favorites" shows favorites count. "Collections" shows count of non-empty collection buckets (wishlist + personal).
+- **Recent Favorites as clickable rows** — Shows first 5 favorites with name, brand, and "LOVED" pill. Clicking opens the modal via `openModal(fragrance)`.
+- **Quick links at bottom** — Added two cards linking to Wishlist and Personal pages with their counts.
+- **Back link on grid pages** — Each collection grid page has a "← Back to Profile" link for navigation.
+
+## Pitfalls
+- **"Fragrances Tried" is approximation** — Without a dedicated swipes count endpoint, we derive this from collection totals. Not accurate if user has swiped but not saved.
+- **Three API calls on dashboard** — Fetching all three collection types to get counts. Could optimize with a dedicated `/collections/stats` endpoint later.
+- **Nav bar duplication** — All four pages have identical nav bar markup. Could extract to shared component, but deferred for v1.
+
+## What I Learned
+- **Template-driven development is fast** — Having a pixel-perfect template (profile_template.png) made implementation straightforward. Measure template, translate to Tailwind classes.
+- **Route nesting in Next.js App Router** — `/collection/page.tsx` is the dashboard, `/collection/favorites/page.tsx` is a nested route. Both coexist without conflict.
+- **Empty states per context** — Each collection grid page has its own empty state message tailored to that collection type (favorites vs wishlist vs personal).
+
+## Files Changed
+- `apps/web/app/collection/page.tsx` — Completely rewrote as Profile dashboard
+- `apps/web/app/collection/favorites/page.tsx` — New file: Favorites grid
+- `apps/web/app/collection/wishlist/page.tsx` — New file: Wishlist grid
+- `apps/web/app/collection/personal/page.tsx` — New file: Personal grid
+
+## Next Steps
+1. Wire Finder page to `/bottles/random` and `/swipe/candidates`
+2. Extract nav bar to shared component to reduce duplication
+3. Add `/collections/stats` endpoint to avoid three API calls on dashboard
+4. Consider adding images to Recent Favorites rows
+
+---
+
+# 2026-02-01 — Finder State Machine Redesign: Immediate Personalization
+
+## Summary
+Rewrote the Finder page's state machine to provide immediate personalization after the first LIKE, rather than deferring until queue exhaustion. Implemented "one try" rule for PASS behavior to balance discovery with relevance.
+
+## Decisions
+- **Fresh start on mount** — Always fetch 1 random bottle (`limit=1`), ignoring localStorage. Each session starts fresh for discovery. This prevents stale personalization from previous sessions.
+- **Immediate personalization on LIKE** — When user likes a bottle, immediately fetch candidates from `/swipe/candidates?seed_bottle_id=X` and replace the queue. The very next card is now personalized based on what they just liked.
+- **"One Try" rule on PASS** — When user passes:
+  - If they've liked something this session AND haven't tried candidates yet: give the recommender one chance
+  - Otherwise: fetch a new random bottle (fresh discovery cycle)
+  - This prevents infinite candidate loops if user keeps passing on similar items
+- **Session-scoped state** — `lastLikedThisSession` and `hasTriedCandidatesThisSession` are in React state, not localStorage. Each page visit is a fresh context.
+
+## Previous vs New Behavior
+**v1 (previous):**
+- Mount with 50 random bottles (or 50 candidates if localStorage seed exists)
+- User likes bottle → localStorage updated, but keeps showing remaining queue (~45+ random bottles)
+- Only when queue drops below 5 does it fetch personalized candidates
+- **Problem:** User waits too long to see personalization effect
+
+**v2 (new):**
+- Mount with 1 random bottle
+- User likes → immediately fetch candidates, show personalized next
+- User passes → check "one try" rule, potentially try candidates or go back to random
+- **Benefit:** Personalization feels instant, ML value is immediately visible
+
+## Implementation Details
+```typescript
+// New state model
+const [currentBottle, setCurrentBottle] = useState<Fragrance | null>(null)
+const [candidateQueue, setCandidateQueue] = useState<Fragrance[]>([])
+const [lastLikedThisSession, setLastLikedThisSession] = useState<number | null>(null)
+const [hasTriedCandidatesThisSession, setHasTriedCandidatesThisSession] = useState(false)
+
+// LIKE handler - immediate personalization
+const handleLike = async () => {
+  // ... log swipe, add to favorites
+  setLastLikedThisSession(likedBottleId)
+  setHasTriedCandidatesThisSession(false) // Reset on new like
+
+  const candidates = await fetchCandidates(likedBottleId)
+  const [nextBottle, ...rest] = filterSwiped(candidates, newSwipedIds)
+  setCurrentBottle(nextBottle)
+  setCandidateQueue(rest)
+}
+
+// PASS handler - "one try" rule
+const handlePass = async () => {
+  if (candidateQueue.length > 0) {
+    // Still have candidates, pop next
+    const [next, ...rest] = candidateQueue
+    setCurrentBottle(next)
+    setCandidateQueue(rest)
+  } else if (lastLikedThisSession && !hasTriedCandidatesThisSession) {
+    // Give recommender one try
+    setHasTriedCandidatesThisSession(true)
+    const candidates = await fetchCandidates(lastLikedThisSession)
+    // ... show next from candidates
+  } else {
+    // Fresh random bottle
+    const randomBottle = await fetchRandomBottle()
+    setCurrentBottle(randomBottle)
+  }
+}
+```
+
+## Pitfalls
+- **Loading state on every action** — Both LIKE and PASS now trigger API fetches, so added `setLoading(true)` to show feedback. v1 only loaded on mount and threshold refetch.
+- **Unused helper function** — Initially created a `showNextFromQueueOrRandom` helper but ended up inlining the logic for clarity. Removed the unused function to satisfy TypeScript.
+
+## What I Learned
+- **Personalization timing matters more than personalization quality.** A good recommendation shown 45 cards late is worse than an okay recommendation shown immediately. Users form opinions quickly.
+- **State machines benefit from explicit state variables.** Instead of deriving state from queue length and index, having explicit `lastLikedThisSession` and `hasTriedCandidatesThisSession` makes the logic readable and debuggable.
+- **"One try" prevents infinite recommendation loops.** Without this rule, a user who passes on all candidates would keep getting candidates forever. The "one try" rule gracefully falls back to discovery mode.
+
+## Files Changed
+- `apps/web/app/finder/page.tsx` — Complete state machine rewrite
+- `docs/agent/WORKFLOW.md` — Updated "Working with the Swipe/Finder Page" section
+
+## Next Steps
+1. Add swipe animations for visual feedback
+2. Consider showing "Personalized for you" indicator when showing candidates
+3. Track metrics on how many swipes before first LIKE (discovery phase length)
+4. A/B test immediate vs deferred personalization to validate the change
+
+---
+
+# 2026-02-02 — Fix /bottles/random Deterministic Results Bug
+
+## Summary
+Fixed critical bug where `GET /bottles/random` returned the same bottles every call instead of random ones. Root cause: the endpoint was using `.limit(limit)` without any random ordering.
+
+## Root Cause
+The code at lines 92-95 was:
+```python
+response = supabase.table("bottles") \
+    .select("*") \
+    .limit(limit) \
+    .execute()
+```
+
+This returns the first N rows in default (insertion) order — completely deterministic. The comments mentioned using `ORDER BY RANDOM()` but it was never actually implemented.
+
+## The Fix
+PostgREST doesn't support `ORDER BY RANDOM()` directly, so we use Python's `random.sample()`:
+
+```python
+# Fetch a larger pool
+pool_size = max(limit * 10, 500)
+response = supabase.table("bottles") \
+    .select("*") \
+    .limit(pool_size) \
+    .execute()
+
+# Randomly sample from the pool
+pool = response.data
+if len(pool) <= limit:
+    sampled = pool
+    random.shuffle(sampled)
+else:
+    sampled = random.sample(pool, limit)
+```
+
+**Trade-off:** This fetches more rows than needed (500 vs 5), but it's acceptable for MVP. True database-level randomness would require an RPC function.
+
+## Verification
+```
+Call 1: [19904, 20714, 3379, 19901, 21003]
+Call 2: [21105, 21420, 20979, 21386, 19094]
+Call 3: [19185, 19094, 21694, 3, 21101]
+Call 4: [22000, 22865, 3372, 7557, 20441]
+Call 5: [19206, 22132, 22045, 22901, 4493]
+```
+
+Each call returns different bottle_ids. `count` field matches `len(results)`.
+
+## What I Learned
+- **Comments don't equal code.** The docstring and comments said "Uses PostgreSQL's ORDER BY RANDOM()" but the actual implementation didn't do it. Always verify behavior, not just documentation.
+- **PostgREST has limitations.** Some PostgreSQL features like `ORDER BY RANDOM()` aren't available via the REST API. Need to either use RPC functions or handle in application code.
+- **MVP trade-offs are okay.** Fetching 500 rows to sample 5 is inefficient, but correctness > performance for MVP. Can optimize later with a Supabase RPC function if needed.
+
+## Files Changed
+- `apps/api/routers/bottles.py` — Added `import random`, rewrote `get_random_bottles()` to use `random.sample()`
+
+## Frontend Impact
+None. The endpoint contract unchanged (`{ count, results }`), just the behavior is now correct.
+
+## Next Steps
+1. Consider adding Supabase RPC function `get_random_bottles(limit)` for true DB-level randomness
+2. Monitor performance — if pool fetch is slow, optimize
+
+---

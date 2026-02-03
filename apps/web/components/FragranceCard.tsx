@@ -1,6 +1,6 @@
 // components/FragranceCard.tsx
 import { Fragrance } from '@/types/fragrance'
-import { getAccordColor } from '@/lib/fragrance-colors'
+import { getAccordColor, formatDisplayText } from '@/lib/fragrance-colors'
 import Image from 'next/image'
 
 interface FragranceCardProps {
@@ -41,7 +41,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
               ? 'bg-purple-100 text-purple-700'
               : 'bg-blue-100 text-blue-700'
           }`}>
-            {fragrance.gender.toLowerCase()}
+            {formatDisplayText(fragrance.gender.toLowerCase())}
           </span>
         )}
       </div>
@@ -50,12 +50,12 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
       <div className="space-y-2">
         {/* Name (serif, larger) */}
         <h3 className="font-serif text-xl leading-tight text-gray-900 line-clamp-1">
-          {fragrance.name}
+          {formatDisplayText(fragrance.name)}
         </h3>
 
         {/* Brand */}
         <p className="text-sm text-gray-600">
-          {fragrance.brand}
+          {formatDisplayText(fragrance.brand)}
         </p>
 
         {/* Accords (max 3) */}
@@ -66,7 +66,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
                 key={idx}
                 className={`px-2.5 py-1 text-xs capitalize ${getAccordColor(accord)}`}
               >
-                {accord.toLowerCase()}
+                {formatDisplayText(accord.toLowerCase())}
               </span>
             ))}
           </div>

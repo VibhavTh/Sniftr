@@ -3,6 +3,7 @@ Purpose:
 FastAPI router for user collection management (wishlist, favorites, personal).
 
 Responsibilities:
+- Provide GET /collections/status?bottle_id=... to check membership across all types
 - Provide POST /collections to add a bottle to a collection (idempotent via upsert)
 - Provide GET /collections?type=... to fetch all bottles in a collection with full detail
 - Provide DELETE /collections/{bottle_id}?type=... to remove a bottle from a collection
@@ -28,6 +29,35 @@ router = APIRouter()
 
 # Valid collection types — matches CHECK constraint in create_collections.sql
 VALID_TYPES = {"wishlist", "favorites", "personal"}
+
+
+# Check membership status of a bottle across all collection types.
+# Returns boolean flags for wishlist, favorites, personal.
+# Used by frontend to render filled/unfilled hearts and dropdown toggles.
+# Example: GET /collections/status?bottle_id=1234
+@router.get("/collections/status")
+async def get_collection_status(
+    bottle_id: int = Query(..., description="Bottle ID (original_index) to check"),
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+    # Fetch all collection entries for this user + bottle (0-3 rows max)
+    response = supabase.table("collections") \
+        .select("collection_type") \
+        .eq("user_id", user_id) \
+        .eq("bottle_id", bottle_id) \
+        .execute()
+
+    # Convert rows to a set of types for O(1) lookup
+    existing_types = {row["collection_type"] for row in response.data}
+
+    return {
+        "wishlist": "wishlist" in existing_types,
+        "favorites": "favorites" in existing_types,
+        "personal": "personal" in existing_types,
+    }
 
 
 # Request body schema for POST /collections.

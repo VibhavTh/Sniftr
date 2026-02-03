@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Cormorant, Inter } from 'next/font/google';
+import { CollectionsProvider } from '@/contexts/CollectionsContext';
 import { FragranceModalProvider } from '@/contexts/FragranceModalContext';
 import "./globals.css";
 
@@ -28,9 +29,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.variable} ${cormorant.variable} font-sans antialiased`}>
-        <FragranceModalProvider>
-          {children}
-        </FragranceModalProvider>
+        <CollectionsProvider>
+          <FragranceModalProvider>
+            {children}
+          </FragranceModalProvider>
+        </CollectionsProvider>
       </body>
     </html>
   );
