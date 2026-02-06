@@ -1650,7 +1650,271 @@ Each call returns different bottle_ids. `count` field matches `len(results)`.
 None. The endpoint contract unchanged (`{ count, results }`), just the behavior is now correct.
 
 ## Next Steps
-1. Consider adding Supabase RPC function `get_random_bottles(limit)` for true DB-level randomness
+1. ~~Consider adding Supabase RPC function `get_random_bottles(limit)` for true DB-level randomness~~ ✓ Done
 2. Monitor performance — if pool fetch is slow, optimize
+
+---
+
+# 2026-02-02 — Upgrade to True Database-Level Randomness via RPC
+
+## Summary
+Replaced Python `random.sample()` with a PostgreSQL RPC function for true database-level randomness. This provides uniform sampling across all 24K bottles with optimal performance.
+
+## Why Upgrade
+The Python shuffle approach had limitations:
+1. **Biased sampling** — Always sampled from first 500 rows (by insertion order)
+2. **Inefficient** — Fetched 500 rows to return 5
+3. **Not truly random** — Older bottles had higher selection probability
+
+## The Solution: PostgreSQL RPC Function
+
+Created `specs/db/create_random_bottles_rpc.sql`:
+
+```sql
+CREATE OR REPLACE FUNCTION get_random_bottles(p_limit INTEGER DEFAULT 50)
+RETURNS SETOF bottles
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT * FROM bottles
+  ORDER BY random()
+  LIMIT p_limit;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_random_bottles(INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_random_bottles(INTEGER) TO anon;
+```
+
+**How it works:**
+1. `ORDER BY random()` assigns a random float (0.0-1.0) to each row
+2. PostgreSQL sorts all 24K bottles by this random value
+3. `LIMIT p_limit` returns only the top N rows
+4. Result: true uniform random sampling across entire catalog
+
+**Why RPC?**
+PostgREST (Supabase's REST layer) doesn't support `ORDER BY RANDOM()` directly. RPC functions expose custom PostgreSQL functions as callable endpoints.
+
+## Updated Python Endpoint
+
+```python
+@router.get("/bottles/random")
+async def get_random_bottles(
+    limit: int = Query(50, ge=1, le=100)
+):
+    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+    # Call PostgreSQL RPC function for true database-level randomness
+    response = supabase.rpc("get_random_bottles", {"p_limit": limit}).execute()
+
+    results = [normalize_bottle(row) for row in response.data]
+    return {"count": len(results), "results": results}
+```
+
+Removed `import random` — no longer needed.
+
+## Verification
+Three test calls returned completely different bottle_ids:
+```
+Call 1: [3150, 11404, 15784, 15313, 7069]
+Call 2: [7825, 17799, 16579, 14624, 13978]
+Call 3: [9665, 14016, 19450, 21077, 17940]
+```
+
+Note the bottle_ids now span the full range (3K-21K), not just the first 500 rows.
+
+## What I Learned
+- **RPC functions unlock PostgreSQL's full power.** When the REST API is limited, RPC functions bridge the gap without sacrificing the convenience of Supabase client libraries.
+- **`STABLE` vs `VOLATILE` matters.** Used `STABLE` because the function doesn't modify data, but results can vary between calls. `VOLATILE` would also work but `STABLE` is more accurate for reads.
+- **Grant permissions explicitly.** Without `GRANT EXECUTE`, the function would only be callable by the service role, not from client-side code.
+
+## Files Changed
+- `apps/api/routers/bottles.py` — Replaced Python shuffle with `supabase.rpc()` call
+- `specs/db/create_random_bottles_rpc.sql` — New file with PostgreSQL function DDL
+
+## Deployment Note
+The RPC function must be created in Supabase before the endpoint works:
+1. Go to Supabase Dashboard → SQL Editor
+2. Paste contents of `specs/db/create_random_bottles_rpc.sql`
+3. Run the SQL
+
+---
+
+# 2026-02-03 — Upgrade to perfume_dataset_v3 for Image URLs
+
+## Summary
+Updated the ingestion pipeline to use `perfume_dataset_v3.csv` which contains scraped image URLs for all fragrances. Re-ran ingestion to update all 24,063 bottles with correct `image_url` values.
+
+## Decisions
+- **Single path change, not schema change** — v3 has identical columns to v1, only `image_url` values differ. No schema migration needed.
+- **No TF-IDF retraining required** — Recommender uses accords + notes (unchanged). Only `image_url` is new data, which is not used by ML model.
+- **Upsert is idempotent** — Safe to re-run ingestion anytime. Uses `on_conflict="original_index"` to update existing rows.
+- **Updated training script path too** — For consistency, even though not retraining now. Future retrains will use v3.
+
+## Pitfalls
+- **CSV columns must match exactly** — Verified v3 has same headers as v1 before running ingestion. Mismatch would cause KeyError.
+- **Normalizer already sanitizes URLs** — `sanitize_image_url()` returns `null` for invalid URLs (empty, "NOT_FOUND", non-http). No changes needed there.
+
+## What I Learned
+- **Data updates don't always require code changes.** When the schema and column names stay constant, updating data is just a path change + re-ingestion.
+- **Verify CSV headers before assuming compatibility.** Quick `head -1` check confirmed v3 has exact same columns as v1.
+- **All endpoints use `normalize_bottle()`** — This single function is the normalization bottleneck. If it returns `image_url` correctly, all 6 bottle-returning endpoints work.
+
+## Verification
+All endpoints confirmed returning `image_url`:
+```
+GET /bottles?limit=2        → bottle_id: 12914, image_url: https://inter.mugler.com/...
+GET /bottles/random?limit=3 → bottle_id: 4378, image_url: https://fimgs.net/...
+GET /bottles/1              → bottle_id: 1, image_url: https://img.ltwebstatic.com/...
+GET /recommendations?q=...  → bottle_id: 4637, image_url: https://fimgs.net/...
+GET /swipe/candidates?...   → bottle_id: 5495, image_url: https://img.fragrancex.com/...
+GET /collections (auth)     → Uses same normalize_bottle(), verified by code audit
+```
+
+## Files Changed
+- `apps/api/intelligence/scripts/ingest_bottles.py` — CSV path: v1 → v2
+- `apps/api/intelligence/scripts/train_recommeder.py` — CSV path: v1 → v2 (for consistency)
+
+## Next Steps
+1. Monitor frontend for any broken images (some URLs may be invalid despite passing sanitization)
+2. Consider adding image URL validation in future scraping pipeline
+
+---
+
+# 2026-02-05 — Finder State Machine v3 (useReducer Rewrite)
+
+## Summary
+Rewrote the Finder/Swipe page from a broken `useState`-based implementation to a `useReducer` state machine with a "one-life" candidate cycle. Also fixed accord color lookup failures caused by hyphenated backend strings not matching the `ACCORD_COLORS` keys.
+
+## Decisions
+- **useReducer over useState** — The original 5 independent `useState` calls caused stale closures in async handlers. `useReducer` makes state transitions atomic — one dispatch, one consistent next state.
+- **Two-tier loading: `loadingInitial` vs `actionBusy`** — Mount shows a full-page skeleton (`loadingInitial`). Swipe actions disable buttons but keep the card visible (`actionBusy`). This prevents the confusing "card disappears then reappears" flash.
+- **"One life" per candidate cycle, not per session** — After LIKE, the user enters a candidate cycle. They get one free PASS (uses "life") to skip a recommendation. Second PASS breaks the cycle back to random. Life resets on each new LIKE.
+- **Triple cache defeat** — Unique timestamp in URL + `cache: 'no-store'` + `Cache-Control: no-cache` headers. Next.js aggressively caches fetches; all three layers are needed.
+- **MVP-first approach** — First simplified to random-only MVP (both LIKE and PASS just call `loadRandom()`), verified it worked, then added back the candidate cycle complexity with `useReducer`.
+
+## Pitfalls
+- **Stale closures were the root cause** — `handlePass` read `candidateQueue` and `passLifeUsed` at render time, but by the time the async callback ran, the values were stale. The handler branched on ghost state, hitting dead paths silently.
+- **Next.js fetch caching returned the same bottle** — Even with `cache: 'no-store'`, the browser/CDN layer could cache. Adding a timestamp query param (`?t=Date.now()`) and explicit `Cache-Control` headers fixed it.
+- **Accord color lookup failed on hyphenated strings** — Backend returns `"fresh-spicy"` but `ACCORD_COLORS` keys are `"fresh spicy"`. Added `.replace(/-/g, ' ')` normalization in both `getAccordColor()` and `getNoteColor()`.
+
+## What I Learned
+- **`useReducer` is the right tool when multiple state fields change together.** If action A needs to update 3 fields atomically, `useReducer` does it in one render. With `useState`, you need 3 `setState` calls that may batch unpredictably.
+- **Stale closures are invisible.** The handler doesn't throw — it just reads an old value and takes the wrong branch. No error, no warning, just wrong behavior. `useReducer` avoids this because `dispatch` is stable and the reducer always sees current state.
+- **Separate "loading" from "busy."** Full-page loading skeletons are for mount. For user-initiated actions, disable the controls and keep the content visible. This gives better perceived performance and prevents layout shift.
+- **Debug with mode + state logging.** The `[LIKE] mode=candidates, queue=5` style logs made it trivial to verify the state machine was transitioning correctly.
+
+## Files Changed
+- `apps/web/app/finder/page.tsx` — Complete rewrite: useState → useReducer v3 with one-life candidate cycle
+- `apps/web/lib/fragrance-colors.ts` — Added `.replace(/-/g, ' ')` in `getAccordColor()` and `getNoteColor()`
+- `docs/agent/WORKFLOW.md` — Documented v3 state machine, reducer actions, flow, key differences from v2
+- `docs/agent/FILE_MAP.md` — Updated Finder section, removed stale localStorage reference
+
+## Next Steps
+1. Browser-test the v3 state machine (6-step test plan: mount, LIKE, PASS-use-life, PASS-break, re-LIKE, PASS-in-random)
+2. Remove temporary debug logs after verification
+3. Add learning-log entry for session reflections (this entry)
+
+---
+
+# 2026-02-05 — Session 5: Homepage + Accord Color Purge Fix
+
+## Summary
+Built a full editorial homepage with 6 sections (Hero, Nav Cards, Trending, Value Statement, Your Library, Footer) and fixed a critical Tailwind CSS purge bug that was causing accord colors to render as gray across the entire app.
+
+## Decisions
+- **Single-file homepage** — No separate components for homepage sections. It's a marketing page with one API call (trending), so a single `page.tsx` keeps it simple and self-contained.
+- **Unsplash hero image via URL** — Used an external Unsplash URL for the hero background instead of bundling a local image. `next.config.ts` already allows all remote image patterns.
+- **Overlay nav on hero** — Nav is `position: absolute` with white text over the dark hero. Inner pages use the standard white bar with dark text. This matches the editorial aesthetic from the Loveable screenshots.
+- **Trending uses existing FragranceCard** — Reused the `FragranceCard` component and `useFragranceModal()` hook so trending cards open the same modal as Browse/Finder. Consistency > custom components.
+
+## Pitfalls
+- **Tailwind purge killed accord colors** — The `content` array in `tailwind.config.ts` only scanned `./pages/`, `./components/`, and `./app/`. The `ACCORD_COLORS` map lives in `./lib/fragrance-colors.ts` — a path Tailwind never scanned. At build time, all ~75 color classes were purged. Fix: added `"./lib/**/*.{js,ts}"` to content array.
+- **Easy to miss** — The `getAccordColor()` function returned the correct class string, but the CSS for that class didn't exist in the compiled stylesheet. No runtime error, no warning — just gray fallbacks silently applied.
+
+## What I Learned
+- **Tailwind only preserves classes it can statically find.** Dynamic class strings in TypeScript objects are invisible to Tailwind unless that file is in the `content` scan paths. This is a common gotcha when color maps or utility functions live outside the standard component directories.
+- **Check the compiled CSS, not just the source.** When colors "should work" but don't, inspect the element in browser devtools. If the class is applied but has no styles, Tailwind purged it.
+- **Marketing pages can be client components.** Even though the homepage is mostly static, making it `'use client'` for the trending section's `useState`/`useEffect` is fine. No SSR complexity needed for a landing page.
+
+## Files Changed
+- `apps/web/app/page.tsx` — Complete rewrite: debug dashboard → editorial homepage with 6 sections
+- `apps/web/tailwind.config.ts` — Added `"./lib/**/*.{js,ts}"` to content array (critical purge fix)
+- `docs/agent/FILE_MAP.md` — Updated homepage status, added homepage quick reference, noted Tailwind config
+- `docs/agent/WORKFLOW.md` — Added "Tailwind Purge Gotcha" section to Core Rules
+
+## Next Steps
+1. Add a local hero image to `public/` to eliminate external dependency on Unsplash
+2. Consider adding a "Recently Viewed" section if user interaction tracking is implemented
+3. Test homepage on mobile viewports
+
+---
+
+# 2026-02-05 — Session 5 (cont.): Navigation Consistency Fix
+
+## Summary
+Fixed navigation inconsistencies across all pages: added missing "Home" tab and changed "Profile" label to "Collection" for consistency.
+
+## Decisions
+- **4-tab structure everywhere** — All pages now use `Home | Finder | Explore | Collection`. Previously, "Home" was missing and some pages used "Profile" instead of "Collection".
+- **Keep navigation duplicated** — Rather than creating a shared nav component, updated each page individually. The nav is simple enough that duplication is acceptable for now, and each page can have slightly different styling (e.g., white text on homepage hero vs. dark text on inner pages).
+- **"Back to Collection" on sub-pages** — The favorites/wishlist/personal pages had "Back to Profile" links, changed to "Back to Collection" to match the nav label.
+
+## Pitfalls
+- **Inconsistent labels from original templates** — The original design used "Profile" for the collection dashboard, but this conflicted with the nav tab called "Collection". The user experience is clearer when the nav label matches the page's conceptual name.
+- **Navigation duplicated across 8 pages** — With no shared component, each page has its own nav implementation. This required 8 separate edits (homepage, browse, finder with 2 navs, collection dashboard, favorites, wishlist, personal).
+
+## What I Learned
+- **Consistent labeling matters** — Having both "Profile" and "Collection" refer to the same page creates user confusion. Pick one term and use it everywhere.
+- **Navigation duplication is a code smell** — Future refactor could extract a `<Nav />` component with props for active tab and color scheme (light/dark). But for MVP, inline nav is fine.
+
+## Files Changed
+- `apps/web/app/page.tsx` — Added "Home" tab to nav
+- `apps/web/app/browse/page.tsx` — Added "Home" tab
+- `apps/web/app/finder/page.tsx` — Added "Home" tab, changed "Profile" → "Collection" (both loading and main navs)
+- `apps/web/app/collection/page.tsx` — Added "Home" tab, changed "Profile" → "Collection"
+- `apps/web/app/collection/favorites/page.tsx` — Added "Home" tab, changed "Profile" → "Collection", "Back to Profile" → "Back to Collection"
+- `apps/web/app/collection/wishlist/page.tsx` — Added "Home" tab, changed "Profile" → "Collection", "Back to Profile" → "Back to Collection"
+- `apps/web/app/collection/personal/page.tsx` — Added "Home" tab, changed "Profile" → "Collection", "Back to Profile" → "Back to Collection"
+- `docs/agent/WORKFLOW.md` — Added Navigation Structure section
+- `docs/agent/FILE_MAP.md` — Added navigation quick reference
+
+## Next Steps
+1. Consider extracting a shared `<Nav />` component to reduce duplication
+2. Test navigation flow on all pages in browser
+
+---
+
+# 2026-02-05 — Session 6: Framer Motion Swipe Animations
+
+## Summary
+Implemented Tinder-style swipe animations on the Finder page using Framer Motion. Cards now animate left on Pass and right on Like with rotation effects. Added drag-to-swipe gesture support.
+
+## Decisions
+- **Framer Motion for animations** — Chose `motion`, `AnimatePresence`, and `PanInfo` from framer-motion. This library integrates well with React and provides declarative animation variants.
+- **Direction state before dispatch** — Set `swipeDirection` state BEFORE calling dispatch, so AnimatePresence knows which exit variant to use. The bottle changes on dispatch, but the exiting animation needs to reference the old bottle with correct direction.
+- **Buttons outside AnimatePresence** — Action buttons (Pass/Like) are rendered outside the AnimatePresence wrapper so they don't animate with the card.
+- **100px drag threshold** — Drag gestures beyond 100px horizontal offset trigger Like/Pass. Within threshold, card snaps back.
+- **Bezier easing with `as const`** — TypeScript required `as const` assertion on ease arrays: `ease: [0.4, 0, 0.2, 1] as const`
+
+## Pitfalls
+- **TypeScript ease property error** — Framer Motion's type system is strict about easing values. Using `ease: "easeOut"` or raw arrays caused type errors. Solution: use bezier curve arrays with `as const` assertion.
+- **JSX structure after edits** — After adding the motion wrapper, duplicate closing tags remained. Required careful cleanup of JSX structure.
+- **AnimatePresence mode** — Used `mode="wait"` so exit animation completes before enter animation starts. Without this, cards would overlap during transition.
+
+## What I Learned
+- **Set animation state before state transition** — When using AnimatePresence with dynamic exit variants, the direction/variant selection must happen before the component key changes.
+- **Drag constraints with elastic** — `dragConstraints={{ left: 0, right: 0 }}` with `dragElastic={0.7}` allows card to drag past bounds but snaps back if threshold not met.
+- **Debug logs for animations** — Added `[ANIM] direction=left/right, prev=X, next=Y` logs to trace animation behavior during development.
+
+## Files Changed
+- `apps/web/app/finder/page.tsx` — Added Framer Motion imports, animation variants, swipeDirection state, drag handlers, wrapped card in AnimatePresence + motion.div
+- `apps/web/package.json` — Added `framer-motion: ^12.33.0` dependency
+- `docs/agent/FILE_MAP.md` — Updated Finder section with animation info
+- `docs/agent/WORKFLOW.md` — Added Framer Motion animation patterns section
+
+## Next Steps
+1. Test animations on mobile for touch gesture support
+2. Consider adding visual feedback during drag (opacity or scale)
+3. Extract animation config to shared constants if reused elsewhere
 
 ---

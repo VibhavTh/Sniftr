@@ -1,6 +1,6 @@
 # File Map — Where Things Live
 
-> Last updated: 2026-02-01 (session 3)
+> Last updated: 2026-02-05 (session 6 — Framer Motion swipe animations)
 
 ## Repository Root
 
@@ -27,7 +27,7 @@ ScentlyMax/
 
 | Path | File | Status |
 |------|------|--------|
-| `/` | `app/page.tsx` | Landing page |
+| `/` | `app/page.tsx` | **Wired to API** (editorial homepage with trending) |
 | `/login` | `app/login/page.tsx` | Auth |
 | `/signup` | `app/signup/page.tsx` | Auth |
 | `/browse` | `app/browse/page.tsx` | **Wired to API** |
@@ -45,7 +45,7 @@ ScentlyMax/
 | `app/layout.tsx` | Root layout with fonts + `FragranceModalProvider` |
 | `app/globals.css` | Tailwind imports |
 | `next.config.ts` | Image remote patterns (http/https `**`) |
-| `tailwind.config.ts` | Tailwind configuration |
+| `tailwind.config.ts` | Tailwind configuration (content includes `./lib/**/*.{js,ts}` for accord colors) |
 
 ### Components
 
@@ -155,6 +155,22 @@ ScentlyMax/
 
 ## Key Files Quick Reference
 
+### "I need to work on the Homepage"
+→ `apps/web/app/page.tsx`
+→ Public editorial landing page (no auth required)
+→ 6 sections: Hero, Nav Cards, Trending (API), Value Statement, Your Library, Footer
+→ Trending fetches from `GET /bottles?limit=8` using `apiGet`, renders via `FragranceCard`
+→ Nav overlays hero with white text (absolute positioned)
+→ Nav structure: `Home | Finder | Explore | Collection`
+
+### "I need to add/update navigation"
+→ Navigation is duplicated in each page (no shared component yet)
+→ Standard 4-tab structure: `Home | Finder | Explore | Collection`
+→ Homepage nav: white text on dark hero (absolute positioned)
+→ Inner pages nav: dark text on white bar (static)
+→ Active tab has `underline underline-offset-4`
+→ Collection sub-pages also have "← Back to Collection" link
+
 ### "I need to change how bottles are returned from API"
 → `apps/api/utils/bottle_normalizer.py`
 
@@ -192,9 +208,12 @@ ScentlyMax/
 
 ### "I need to work on the Finder/Swipe page"
 → `apps/web/app/finder/page.tsx`
-→ Uses `/bottles/random` for cold start, `/swipe/candidates?seed_bottle_id=X` for personalized queue
-→ Logs swipes to `POST /swipes`, auto-favorites on Like via `POST /collections`
-→ localStorage key: `scentlymax_lastLikedBottleId`
+→ Uses `useReducer` state machine (v3): mode="random"|"candidates", passLifeUsed, candidateQueue
+→ `/bottles/random` for cold start + pass-in-random, `/swipe/candidates?seed_bottle_id=X` for personalized queue on LIKE
+→ Logs swipes to `POST /swipes`, auto-favorites on Like via `POST /collections` (fire-and-forget, auth only)
+→ No localStorage — all state is in-memory, resets on mount
+→ **Animations**: Framer Motion (`motion`, `AnimatePresence`) for swipe exits (left=Pass, right=Like with rotation)
+→ **Drag gesture**: Drag threshold 100px triggers Like/Pass via `onDragEnd` handler
 
 ---
 

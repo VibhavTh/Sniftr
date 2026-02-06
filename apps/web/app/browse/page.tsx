@@ -127,6 +127,9 @@ export default function BrowsePage() {
               FRAGRANCE
             </h1>
             <div className="flex items-center gap-10">
+              <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">
+                Home
+              </a>
               <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">
                 Finder
               </a>

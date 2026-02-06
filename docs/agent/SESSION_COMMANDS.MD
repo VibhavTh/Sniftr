@@ -15,4 +15,4 @@ These commands enforce shared truth, prevent hallucination, and keep project con
 
 {Sync}: Before responding, read and follow all files under docs/agent/* as the authoritative source of truth. Do not invent anything not present there; if uncertain, ask exactly one clarifying question.
 
-{Save}: Update docs/agent/FILE_MAP.md and WORKFLOW.md to reflect the new changes
+{Save}: Update docs/agent/FILE_MAP.md and WORKFLOW.md and learning-log.md to reflect the new changes

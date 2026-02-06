@@ -1,6 +1,6 @@
 """
 Purpose:
-One-time data ingestion script to populate the bottles table from perfume_dataset_v1.csv.
+One-time data ingestion script to populate the bottles table from perfume_dataset_v3.csv.
 
 Responsibilities:
 - Read CSV with comma delimiter
@@ -11,7 +11,7 @@ Responsibilities:
 
 System context:
 - Run once after table creation: python apps/api/intelligence/scripts/ingest_bottles.py
-- CSV path: apps/api/intelligence/perfume_dataset_v1.csv
+- CSV path: apps/api/intelligence/perfume_dataset_v3.csv
 - Uses Supabase Python client with service role key for bulk insert
 """
 
@@ -81,14 +81,14 @@ def ingest_bottles():
     """
     Main ingestion function that reads CSV and populates Supabase.
 
-    Reads perfume_dataset_v1.csv row by row, maps columns to the bottles table
+    Reads perfume_dataset_v3.csv row by row, maps columns to the bottles table
     schema, and performs batched upsert operations using original_index as the conflict key.
     Batching prevents HTTP/2 connection timeouts that occur with thousands of individual requests.
     This allows re-running the script safely to update existing data.
     Prints progress every batch for visibility during long imports.
     """
-    # CSV is located at apps/api/intelligence/perfume_dataset_v1.csv
-    csv_path = Path(__file__).parent.parent / "perfume_dataset_v1.csv"
+    # CSV is located at apps/api/intelligence/perfume_dataset_v3.csv
+    csv_path = Path(__file__).parent.parent / "perfume_dataset_v3.csv"
 
     print(f"Reading CSV from: {csv_path}")
     if not csv_path.exists():

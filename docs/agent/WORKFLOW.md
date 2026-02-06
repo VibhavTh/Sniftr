@@ -1,6 +1,6 @@
 # Workflow — How We Work
 
-> Last updated: 2026-02-01 (session 3, state machine v2)
+> Last updated: 2026-02-05 (session 6 — Framer Motion swipe animations)
 
 ## Session Startup Protocol
 
@@ -69,6 +69,20 @@ User-facing strings from the backend may contain hyphens (e.g., `"fresh-spicy"`,
 - **Accords**: Use `getAccordColor(accord)` — colored chips
 - **Notes**: Neutral styling only (`bg-white border border-neutral-200 text-neutral-700`)
 - **Gender**: Inline color logic (pink/purple/blue based on value)
+
+### Tailwind Purge Gotcha
+
+Dynamic class strings in `lib/fragrance-colors.ts` (like `ACCORD_COLORS`) are only preserved if Tailwind scans that directory. The `tailwind.config.ts` content array MUST include `"./lib/**/*.{js,ts}"`. Without this, accord colors render as gray fallbacks because Tailwind purges the unused classes at build time.
+
+### Navigation Structure
+
+All pages use a consistent 4-tab navigation: `Home | Finder | Explore | Collection`
+- **Home** → `/` (homepage)
+- **Finder** → `/finder` (swipe discovery)
+- **Explore** → `/browse` (search/browse grid)
+- **Collection** → `/collection` (user profile dashboard)
+
+The active tab is underlined. Navigation is currently duplicated in each page (no shared component).
 
 ---
 
@@ -142,6 +156,7 @@ Add a dated entry to `docs/learning-log.md`:
 3. Use `useFragranceModal()` if it needs modal
 4. Follow layout pattern from existing pages (nav, main, container widths)
 5. Use `apiGet`/`apiPost` for API calls
+6. **Copy nav from existing page** — Use consistent 4-tab structure: `Home | Finder | Explore | Collection`
 
 ### Wiring a Page to API
 
@@ -168,43 +183,81 @@ Add a dated entry to `docs/learning-log.md`:
 
 ### Working with the Swipe/Finder Page
 
-The Finder uses an **immediate personalization** state machine (v2):
+The Finder uses a **useReducer-based state machine** (v3 — one-life candidate cycle):
 
-**State Model:**
+**State Model (managed by `finderReducer`):**
 - `currentBottle` — The single bottle displayed to the user
+- `mode` — `"random"` or `"candidates"` (current cycle type)
 - `candidateQueue` — ML-similar bottles to show next (filled after LIKE)
-- `lastLikedThisSession` — Bottle ID used as seed for candidates (session-scoped)
-- `hasTriedCandidatesThisSession` — "One try" flag for PASS behavior
-- `swipedIds` — Set of all swiped bottle IDs to avoid duplicates
+- `passLifeUsed` — Whether the "one life" has been consumed in the current candidate cycle
+- `lastLikedId` — Bottle ID used as seed for candidate refetch (session-scoped)
+- `loadingInitial` — True only during mount fetch (full-page skeleton)
+- `actionBusy` — True during LIKE/PASS async (buttons disabled, card stays visible)
 
 **Flow:**
 
-1. **Mount (Fresh Start)** — Always fetch 1 random bottle (`GET /bottles/random?limit=1`), ignore localStorage
-2. **On LIKE** — Immediately fetch candidates (`GET /swipe/candidates?seed_bottle_id=X`), replace queue, show personalized next
-3. **On PASS (One Try Rule)**:
-   - If `lastLikedThisSession` exists AND `!hasTriedCandidatesThisSession`: fetch candidates once, set flag
-   - Else: fetch new random bottle (fresh discovery cycle)
-4. **Queue Continuation** — When `candidateQueue` has items, pop next one (no extra fetch)
-5. **Auth handling** — Swipe logging (`POST /swipes`) and favorites (`POST /collections`) only when authenticated
+1. **Mount** — Fetch 1 random bottle (`GET /bottles/random?limit=1`), set mode="random"
+2. **On LIKE** — Fetch candidates (`GET /swipe/candidates?seed_bottle_id=X`), replace queue, set mode="candidates", reset passLifeUsed=false
+3. **On PASS in candidates, life unused** — Pop next from queue (use life), set passLifeUsed=true
+4. **On PASS in candidates, life used** — BREAK cycle: mode="random", fetch new random bottle
+5. **On PASS in random** — Fetch new random bottle
+6. **Auth handling** — `POST /swipes` and `POST /collections` fire-and-forget when authenticated
 
-**Key Difference from v1:**
-- v1: Personalization deferred until queue exhaustion (~45+ random bottles after first like)
-- v2: Personalization immediate after first LIKE (next card is from recommender)
+**Reducer Actions:**
+- `INIT_DONE` — Mount complete
+- `LIKED` — Enter/continue candidate cycle
+- `PASS_USE_LIFE` — Consume life, advance in queue
+- `PASS_BREAK` — Break cycle, return to random
+- `PASS_RANDOM` — New random in random mode
+
+**Key Differences from v2:**
+- v2: `useState` with stale closure risk → v3: `useReducer` for atomic state transitions
+- v2: Full-page loading on every action → v3: `actionBusy` disables buttons without hiding card
+- v2: "One try" per session → v3: "One life" per candidate cycle (resets on each LIKE)
 
 ```typescript
-// State model:
-const [currentBottle, setCurrentBottle] = useState<Fragrance | null>(null)
-const [candidateQueue, setCandidateQueue] = useState<Fragrance[]>([])
-const [lastLikedThisSession, setLastLikedThisSession] = useState<number | null>(null)
-const [hasTriedCandidatesThisSession, setHasTriedCandidatesThisSession] = useState(false)
+// State model (useReducer):
+const [state, dispatch] = useReducer(finderReducer, INITIAL_STATE)
 
-// LIKE handler key logic:
-const candidates = await fetchCandidates(likedBottleId)
-const [nextBottle, ...rest] = filterSwiped(candidates, newSwipedIds)
-setCurrentBottle(nextBottle)
-setCandidateQueue(rest)
-setHasTriedCandidatesThisSession(false) // Reset on new like
+// LIKE → dispatch LIKED with candidates
+// PASS in candidates, !passLifeUsed → dispatch PASS_USE_LIFE
+// PASS in candidates, passLifeUsed → dispatch PASS_BREAK
+// PASS in random → dispatch PASS_RANDOM
 ```
+
+**Swipe Animations (Framer Motion):**
+
+The Finder uses Framer Motion for Tinder-style swipe animations:
+
+```typescript
+import { motion, AnimatePresence, PanInfo } from 'framer-motion'
+
+// Animation variants
+const cardVariants = {
+  enter: { opacity: 0, y: 20 },
+  center: { opacity: 1, y: 0, x: 0, rotate: 0 },
+  exitLeft: { opacity: 0, x: -300, rotate: -15 },   // Pass
+  exitRight: { opacity: 0, x: 300, rotate: 15 },    // Like
+}
+
+// Wrap card in AnimatePresence + motion.div
+<AnimatePresence mode="wait" initial={false}>
+  <motion.div
+    key={bottle.bottle_id}
+    variants={cardVariants}
+    initial="enter" animate="center"
+    exit={swipeDirection === 'right' ? 'exitRight' : 'exitLeft'}
+    drag="x"
+    onDragEnd={handleDragEnd}
+  >
+```
+
+**Key animation patterns:**
+- Set `swipeDirection` state BEFORE dispatch (so AnimatePresence knows which exit variant to use)
+- Use `key={bottle_id}` to force remount on bottle change
+- Drag threshold: 100px horizontal offset triggers Like/Pass
+- Buttons placed OUTSIDE AnimatePresence to prevent them animating with card
+- `onAnimationComplete={() => setSwipeDirection(null)}` resets direction after exit
 
 ---
 

@@ -14,8 +14,6 @@ System context:
 - Stable ordering on /bottles ensures deterministic pagination
 """
 
-import random
-
 from fastapi import APIRouter, HTTPException, Query
 
 from supabase import create_client
@@ -79,34 +77,20 @@ async def get_bottles(
 # Fetch random bottles for initial swipe queue or exploration.
 # No authentication required - randomness is the same for all users in v1.
 # Returns normalized bottle cards with arrays for accords and notes.
-# Uses Python random.sample() since PostgREST doesn't support ORDER BY RANDOM().
+# Uses PostgreSQL RPC function for true database-level randomness via ORDER BY random().
 @router.get("/bottles/random")
 async def get_random_bottles(
     limit: int = Query(50, ge=1, le=100, description="Number of random bottles to return (1-100)")
 ):
     supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # PostgREST doesn't support ORDER BY RANDOM() directly.
-    # Strategy: Fetch a larger pool and randomly sample in Python.
-    # Pool size: 10x limit or 500, whichever is larger (covers 24K bottles well)
-    pool_size = max(limit * 10, 500)
-
-    response = supabase.table("bottles") \
-        .select("*") \
-        .limit(pool_size) \
-        .execute()
-
-    # Randomly sample `limit` bottles from the pool
-    pool = response.data
-    if len(pool) <= limit:
-        # Pool smaller than requested, return all (shuffled)
-        sampled = pool
-        random.shuffle(sampled)
-    else:
-        sampled = random.sample(pool, limit)
+    # Call PostgreSQL RPC function: get_random_bottles(p_limit)
+    # This executes ORDER BY random() LIMIT p_limit directly in the database,
+    # providing true uniform random sampling across all 24K bottles.
+    response = supabase.rpc("get_random_bottles", {"p_limit": limit}).execute()
 
     # Normalize each bottle to UI format with arrays
-    results = [normalize_bottle(row) for row in sampled]
+    results = [normalize_bottle(row) for row in response.data]
 
     return {
         "count": len(results),

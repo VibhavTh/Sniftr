@@ -1,210 +1,392 @@
 /**
  * Purpose:
- * Protected home dashboard that displays user info and tests backend connectivity.
+ * Public homepage — editorial landing page for ScentlyMax.
  *
- * Responsibilities:
- * - Check if user is authenticated (redirect to /login if not)
- * - Display logged-in user's email
- * - Call backend GET /health-auth with Bearer token
- * - Show backend response to verify auth flow works end-to-end
+ * Sections:
+ * 1. Hero — full-width fragrance photography + value prop + CTAs
+ * 2. Nav Cards — 3-up grid linking to Finder, Browse, Collection
+ * 3. Trending — horizontal scroll of top-rated fragrances from API
+ * 4. Value Statement — mid-page CTA for collections
+ * 5. Your Library — 3-up grid of collection category cards
+ * 6. Footer — brand info + navigation links
  *
  * System context:
- * - Requires active Supabase session
- * - Communicates with FastAPI backend using JWT Bearer tokens
- * - Entry point after successful login/signup
+ * - Public page (no auth required)
+ * - Fetches trending bottles from GET /bottles?limit=8
+ * - Reuses FragranceCard component for trending section
  */
 
 'use client'
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { useState, useEffect } from 'react'
+import { apiGet } from '@/lib/api'
+import { Fragrance } from '@/types/fragrance'
+import FragranceCard from '@/components/FragranceCard'
+import { useFragranceModal } from '@/contexts/FragranceModalContext'
 
-/**
- * HomePage component renders the protected dashboard for authenticated users.
- *
- * This is the main landing page after successful login or signup. It verifies
- * the user has an active session, displays their email, and provides functionality
- * to test backend connectivity with JWT Bearer token authentication. Users can
- * also logout from this page.
- */
+interface BottlesResponse {
+  page: number
+  limit: number
+  total: number
+  results: Fragrance[]
+}
+
 export default function HomePage() {
-    const router = useRouter();
-    const [email, setEmail] = useState<string | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [apiResponse, setApiResponse] = useState<string | null>(null);
-    const [apiLoading, setApiLoading] = useState(false);
-    const [apiError, setApiError] = useState<string | null>(null);
+  const { open: openModal } = useFragranceModal()
+  const [trending, setTrending] = useState<Fragrance[]>([])
 
-    /**
-     * Effect hook that runs on component mount to verify authentication.
-     *
-     * This ensures that only authenticated users can access this page by
-     * checking for an active Supabase session. Unauthenticated users are
-     * redirected to the login page.
-     */
-    useEffect(() => {
-        checkAuth();
-    }, []);
-
-    /**
-     * Verifies the user has an active Supabase session.
-     *
-     * If no session exists, redirects to the login page. If a session is found,
-     * extracts the user's email and updates the UI to show the authenticated state.
-     */
-    const checkAuth = async () => {
-        const { data: { session } } = await supabase.auth.getSession();
-
-        if (!session) {
-            router.push('/login');
-            return;
-        }
-
-        setEmail(session.user.email || null);
-        setLoading(false);
-    };
-
-    /**
-     * Tests backend connectivity by calling the /health-auth endpoint.
-     *
-     * This function retrieves the current user's JWT access token from the
-     * Supabase session and includes it as a Bearer token in the Authorization
-     * header. The backend response is displayed to verify end-to-end authentication
-     * is working correctly.
-     */
-    const testBackendAuth = async () => {
-        setApiLoading(true);
-        setApiError(null);
-        setApiResponse(null);
-
-        try {
-            const { data: { session } } = await supabase.auth.getSession();
-
-            if (!session) {
-                setApiError('No active session');
-                return;
-            }
-
-            const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-            const response = await fetch(`${apiUrl}/health-auth`, {
-                headers: {
-                    'Authorization': `Bearer ${session.access_token}`
-                }
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            setApiResponse(JSON.stringify(data, null, 2));
-        } catch (error: any) {
-            setApiError(error.message);
-        } finally {
-            setApiLoading(false);
-        }
-    };
-
-    /**
-     * Handles user logout by clearing the Supabase session.
-     *
-     * After signing out, the user is redirected to the login page.
-     */
-    const handleLogout = async () => {
-        await supabase.auth.signOut();
-        router.push('/login');
-    };
-
-    /**
-     * Renders loading state while authentication is being verified.
-     */
-    if (loading) {
-        return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50">
-                <div className="text-center">
-                    <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-                    <p className="mt-4 text-gray-600">Loading...</p>
-                </div>
-            </div>
-        );
+  useEffect(() => {
+    const fetchTrending = async () => {
+      try {
+        const data = await apiGet<BottlesResponse>('/bottles?limit=8&page=1')
+        setTrending(data.results)
+      } catch {
+        // Trending section silently degrades
+      }
     }
+    fetchTrending()
+  }, [])
 
-    /**
-     * Renders the protected dashboard with user info and backend testing UI.
-     *
-     * Displays the authenticated user's email, a logout button, and controls
-     * for testing backend connectivity. Shows backend responses or errors
-     * based on the API call results.
-     */
-    return (
-        <div className="min-h-screen bg-gray-50">
-            <nav className="bg-white shadow-sm">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex justify-between items-center h-16">
-                        <h1 className="text-2xl font-bold text-purple-600">ScentlyMax</h1>
-                        <div className="flex items-center space-x-4">
-                            <span className="text-sm text-gray-700">
-                                Logged in as: <strong className="text-gray-900">{email}</strong>
-                            </span>
-                            <button
-                                onClick={handleLogout}
-                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition"
-                            >
-                                Logout
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </nav>
-
-            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-                <div className="bg-white rounded-2xl shadow-lg p-8">
-                    <div className="text-center mb-8">
-                        <h2 className="text-3xl font-bold text-gray-900">Welcome to ScentlyMax</h2>
-                        <p className="mt-2 text-gray-600">Your fragrance discovery platform</p>
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-8">
-                        <h3 className="text-xl font-semibold text-gray-900 mb-4">Test Backend Authentication</h3>
-                        <p className="text-sm text-gray-600 mb-6">
-                            Verify that your JWT token works with the FastAPI backend by calling the protected endpoint.
-                        </p>
-
-                        <button
-                            onClick={testBackendAuth}
-                            disabled={apiLoading}
-                            className="px-6 py-3 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition"
-                        >
-                            {apiLoading ? (
-                                <span className="flex items-center">
-                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    Calling backend...
-                                </span>
-                            ) : (
-                                'Call GET /health-auth'
-                            )}
-                        </button>
-
-                        {apiError && (
-                            <div className="mt-6 bg-red-50 border border-red-200 rounded-lg p-4">
-                                <h4 className="text-sm font-semibold text-red-800 mb-2">Error:</h4>
-                                <pre className="text-sm text-red-700 whitespace-pre-wrap font-mono">{apiError}</pre>
-                            </div>
-                        )}
-
-                        {apiResponse && (
-                            <div className="mt-6 bg-green-50 border border-green-200 rounded-lg p-4">
-                                <h4 className="text-sm font-semibold text-green-800 mb-2">Backend Response:</h4>
-                                <pre className="text-sm text-green-700 whitespace-pre-wrap font-mono overflow-x-auto">{apiResponse}</pre>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </main>
+  return (
+    <div className="min-h-screen bg-stone-50">
+      {/* ============================================ */}
+      {/* NAVIGATION */}
+      {/* ============================================ */}
+      <nav className="absolute top-0 left-0 right-0 z-20">
+        <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
+          <div className="flex justify-between items-center h-[72px]">
+            <a href="/" className="font-serif text-[15px] font-normal text-white tracking-[0.3em] uppercase">
+              FRAGRANCE
+            </a>
+            <div className="flex items-center gap-10">
+              <a href="/" className="text-[15px] font-light text-white/90 hover:text-white transition underline underline-offset-4">
+                Home
+              </a>
+              <a href="/finder" className="text-[15px] font-light text-white/90 hover:text-white transition">
+                Finder
+              </a>
+              <a href="/browse" className="text-[15px] font-light text-white/90 hover:text-white transition">
+                Explore
+              </a>
+              <a href="/collection" className="text-[15px] font-light text-white/90 hover:text-white transition">
+                Collection
+              </a>
+            </div>
+            <a href="/login" className="w-8 h-8 flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </a>
+          </div>
         </div>
-    );
+      </nav>
+
+      {/* ============================================ */}
+      {/* SECTION 1: HERO */}
+      {/* ============================================ */}
+      <section className="relative h-[85vh] min-h-[600px] flex items-center justify-center overflow-hidden">
+        {/* Background image */}
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{
+            backgroundImage: 'url(/scently_max_homepage_header.jpeg)',
+          }}
+        />
+        <div className="absolute inset-0 bg-black/30" />
+
+        {/* Hero content */}
+        <div className="relative z-10 text-center px-8 max-w-3xl mx-auto">
+          <h1 className="font-serif text-[56px] md:text-[72px] font-light text-white leading-[1.1] mb-6">
+            Discover scents<br />made for you.
+          </h1>
+          <p className="text-[17px] font-light text-white/80 leading-relaxed mb-12 max-w-lg mx-auto">
+            Swipe, save favorites, and build your collection — powered by a content-based recommender.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <a
+              href="/finder"
+              className="px-10 py-4 bg-neutral-900 text-white text-[13px] font-normal tracking-[0.2em] uppercase hover:bg-neutral-800 transition-colors"
+            >
+              Start Finding
+            </a>
+            <a
+              href="/browse"
+              className="px-10 py-4 border border-white/60 text-white text-[13px] font-normal tracking-[0.2em] uppercase hover:bg-white/10 transition-colors"
+            >
+              Browse Fragrances
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================ */}
+      {/* SECTION 2: PRIMARY NAV CARDS */}
+      {/* ============================================ */}
+      <section className="bg-stone-100 py-24">
+        <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {/* Fragrance Finder */}
+            <div className="bg-white border border-neutral-200 p-10">
+              <div className="mb-6">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-neutral-400">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+              </div>
+              <h3 className="font-serif text-[24px] font-light text-neutral-900 mb-3 leading-tight">
+                Fragrance Finder
+              </h3>
+              <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-8">
+                Swipe through scents and train your taste.
+              </p>
+              <a
+                href="/finder"
+                className="text-[13px] font-normal text-neutral-900 tracking-wider uppercase hover:text-neutral-600 transition-colors"
+              >
+                Explore &rarr;
+              </a>
+            </div>
+
+            {/* Explore Catalog */}
+            <div className="bg-white border border-neutral-200 p-10">
+              <div className="mb-6">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-neutral-400">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                </svg>
+              </div>
+              <h3 className="font-serif text-[24px] font-light text-neutral-900 mb-3 leading-tight">
+                Explore Catalog
+              </h3>
+              <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-8">
+                Browse the full library with filters.
+              </p>
+              <a
+                href="/browse"
+                className="text-[13px] font-normal text-neutral-900 tracking-wider uppercase hover:text-neutral-600 transition-colors"
+              >
+                Explore &rarr;
+              </a>
+            </div>
+
+            {/* Your Collection */}
+            <div className="bg-white border border-neutral-200 p-10">
+              <div className="mb-6">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-neutral-400">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                </svg>
+              </div>
+              <h3 className="font-serif text-[24px] font-light text-neutral-900 mb-3 leading-tight">
+                Your Collection
+              </h3>
+              <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-8">
+                Favorites, wishlist, and personal shelves.
+              </p>
+              <a
+                href="/collection"
+                className="text-[13px] font-normal text-neutral-900 tracking-wider uppercase hover:text-neutral-600 transition-colors"
+              >
+                Explore &rarr;
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================ */}
+      {/* SECTION 3: TRENDING RIGHT NOW */}
+      {/* ============================================ */}
+      {trending.length > 0 && (
+        <section className="bg-stone-50 py-24">
+          <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
+            <div className="flex justify-between items-end mb-14">
+              <h2 className="font-serif text-[36px] font-light text-neutral-900 leading-tight">
+                Trending right now
+              </h2>
+              <a
+                href="/browse"
+                className="text-[13px] font-normal text-neutral-900 tracking-wider uppercase hover:text-neutral-600 transition-colors"
+              >
+                View all &rarr;
+              </a>
+            </div>
+
+            {/* Horizontal scroll container */}
+            <div className="flex gap-8 overflow-x-auto pb-4 -mx-2 px-2" style={{ scrollbarWidth: 'none' }}>
+              {trending.map((bottle) => (
+                <div key={bottle.bottle_id} className="flex-shrink-0 w-[260px]">
+                  <FragranceCard fragrance={bottle} onOpen={openModal} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ============================================ */}
+      {/* SECTION 4: VALUE STATEMENT / MID CTA */}
+      {/* ============================================ */}
+      <section className="bg-stone-200 py-28">
+        <div className="max-w-[800px] mx-auto px-8 text-center">
+          <h2 className="font-serif text-[42px] md:text-[52px] font-light text-neutral-900 leading-tight mb-6">
+            Build your scent wardrobe.
+          </h2>
+          <p className="text-[17px] font-light text-neutral-500 leading-relaxed mb-12 max-w-lg mx-auto">
+            Save what you love. Revisit later. Let the recommender refine your next picks.
+          </p>
+          <a
+            href="/collection/favorites"
+            className="inline-block px-10 py-4 bg-neutral-900 text-white text-[13px] font-normal tracking-[0.2em] uppercase hover:bg-neutral-800 transition-colors"
+          >
+            View Favorites
+          </a>
+        </div>
+      </section>
+
+      {/* ============================================ */}
+      {/* SECTION 5: YOUR LIBRARY */}
+      {/* ============================================ */}
+      <section className="bg-stone-50 py-24">
+        <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
+          <h2 className="font-serif text-[36px] font-light text-neutral-900 leading-tight mb-14 text-center">
+            Your Library
+          </h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {/* Favorites */}
+            <div className="bg-white border border-neutral-200 overflow-hidden">
+              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                </svg>
+              </div>
+              <div className="p-8">
+                <h3 className="font-serif text-[22px] font-light text-neutral-900 mb-2 leading-tight">
+                  Favorites
+                </h3>
+                <p className="text-[15px] font-light text-neutral-500 mb-6">
+                  Scents you&apos;ve loved
+                </p>
+                <a
+                  href="/collection/favorites"
+                  className="inline-block px-6 py-3 bg-neutral-900 text-white text-[12px] font-normal tracking-[0.15em] uppercase hover:bg-neutral-800 transition-colors"
+                >
+                  View Favorites
+                </a>
+              </div>
+            </div>
+
+            {/* Wishlist */}
+            <div className="bg-white border border-neutral-200 overflow-hidden">
+              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300">
+                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                </svg>
+              </div>
+              <div className="p-8">
+                <h3 className="font-serif text-[22px] font-light text-neutral-900 mb-2 leading-tight">
+                  Wishlist
+                </h3>
+                <p className="text-[15px] font-light text-neutral-500 mb-6">
+                  Fragrances to try next
+                </p>
+                <a
+                  href="/collection/wishlist"
+                  className="inline-block px-6 py-3 bg-neutral-900 text-white text-[12px] font-normal tracking-[0.15em] uppercase hover:bg-neutral-800 transition-colors"
+                >
+                  View Wishlist
+                </a>
+              </div>
+            </div>
+
+            {/* Personal Collection */}
+            <div className="bg-white border border-neutral-200 overflow-hidden">
+              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+              </div>
+              <div className="p-8">
+                <h3 className="font-serif text-[22px] font-light text-neutral-900 mb-2 leading-tight">
+                  Personal Collection
+                </h3>
+                <p className="text-[15px] font-light text-neutral-500 mb-6">
+                  Your curated shelves
+                </p>
+                <a
+                  href="/collection/personal"
+                  className="inline-block px-6 py-3 bg-neutral-900 text-white text-[12px] font-normal tracking-[0.15em] uppercase hover:bg-neutral-800 transition-colors"
+                >
+                  Browse Collection
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================ */}
+      {/* SECTION 6: FOOTER */}
+      {/* ============================================ */}
+      <footer className="bg-neutral-900 text-white py-16">
+        <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
+            {/* Brand */}
+            <div>
+              <h4 className="font-serif text-[20px] font-light mb-4">ScentlyMax</h4>
+              <p className="text-[14px] font-light text-neutral-400 leading-relaxed max-w-xs">
+                Discover your next signature scent. Powered by AI-driven recommendations.
+              </p>
+            </div>
+
+            {/* Explore links */}
+            <div>
+              <h5 className="text-[11px] font-normal tracking-[0.2em] uppercase text-neutral-400 mb-6">
+                Explore
+              </h5>
+              <ul className="space-y-3">
+                <li>
+                  <a href="/finder" className="text-[15px] font-light text-neutral-300 hover:text-white transition-colors">
+                    Finder
+                  </a>
+                </li>
+                <li>
+                  <a href="/browse" className="text-[15px] font-light text-neutral-300 hover:text-white transition-colors">
+                    Browse
+                  </a>
+                </li>
+                <li>
+                  <a href="/collection" className="text-[15px] font-light text-neutral-300 hover:text-white transition-colors">
+                    Collection
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            {/* Legal links */}
+            <div>
+              <h5 className="text-[11px] font-normal tracking-[0.2em] uppercase text-neutral-400 mb-6">
+                Legal
+              </h5>
+              <ul className="space-y-3">
+                <li>
+                  <span className="text-[15px] font-light text-neutral-300">
+                    Privacy
+                  </span>
+                </li>
+                <li>
+                  <span className="text-[15px] font-light text-neutral-300">
+                    Terms
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  )
 }

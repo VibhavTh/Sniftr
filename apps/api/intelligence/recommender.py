@@ -136,10 +136,6 @@ class FragranceRecommender:
 
 
     # --- UX Feature Wrappers ---
-    def recommend_for_swipe(self, bottle_id: int) -> list[int]:
-        # For the discovery feature, we want a larger, diverse set
-        return self.recommend_by_bottle_id(bottle_id, k=50)
-
     def recommend_similar(self, bottle_id: int) -> list[int]:
         # For the "Similar Products" shelf, we want a tight top 10
         return self.recommend_by_bottle_id(bottle_id, k=10)

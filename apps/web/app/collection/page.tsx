@@ -62,9 +62,10 @@ export default function ProfilePage() {
           <div className="flex justify-between items-center h-[72px]">
             <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">FRAGRANCE</h1>
             <div className="flex items-center gap-10">
+              <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
               <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Finder</a>
               <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
-              <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Profile</a>
+              <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Collection</a>
             </div>
             <button className="w-8 h-8 flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">

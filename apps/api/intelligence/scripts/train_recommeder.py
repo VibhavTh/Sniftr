@@ -38,7 +38,7 @@ def build_soup(row):
 # absolute path discovery to ensure the script runs correctly from 
 # any directory and creates the 'artifacts' folder if it is missing.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(SCRIPT_DIR, '..', 'perfume_dataset_v1.csv')
+CSV_PATH = os.path.join(SCRIPT_DIR, '..', 'perfume_dataset_v3.csv')
 ARTIFACT_DIR = os.path.join(SCRIPT_DIR, '..', 'artifacts')
 os.makedirs(ARTIFACT_DIR, exist_ok=True)
 

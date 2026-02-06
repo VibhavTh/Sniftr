@@ -1,21 +1,18 @@
 /**
- * Finder page - Tinder-style swipe interface for discovering fragrances.
+ * Finder page — Tinder-style swipe interface for discovering fragrances.
  *
- * State Machine (v2):
- * - Mount: Always fetch 1 random bottle (fresh start, ignore localStorage)
- * - LIKE: Immediately fetch candidates, replace queue, show personalized next
- * - PASS: "One try" rule - if we have a recent like, try candidates once, then random
- *
- * Features:
- * - Immediate personalization after first LIKE (no waiting for queue exhaustion)
- * - Like/Pass buttons that log to POST /swipes (when authenticated)
- * - Auto-adds to favorites on Like via POST /collections
- * - Card click opens FragranceDetailModal for full details
+ * State Machine (v3 — one-life candidate cycle):
+ *   Mount  → fetch 1 random bottle, mode="random"
+ *   LIKE   → POST /swipes, POST /collections, fetch candidates, mode="candidates", passLifeUsed=false
+ *   PASS in candidates, life unused → advance in queue, passLifeUsed=true
+ *   PASS in candidates, life used   → BREAK cycle → fetch random, mode="random"
+ *   PASS in random                  → fetch random
  */
 
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useReducer, useState, useEffect, useCallback, useRef } from 'react'
+import { motion, AnimatePresence, PanInfo } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { apiPost, ApiError } from '@/lib/api'
 import { Fragrance } from '@/types/fragrance'
@@ -23,8 +20,43 @@ import { useFragranceModal } from '@/contexts/FragranceModalContext'
 import { getAccordColor, formatDisplayText } from '@/lib/fragrance-colors'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const LOCALSTORAGE_KEY = 'scentlymax_lastLikedBottleId'
 
+// ============================================
+// SWIPE ANIMATION CONFIG
+// ============================================
+type SwipeDirection = 'left' | 'right' | null
+
+const SWIPE_THRESHOLD = 100 // pixels to trigger swipe on drag
+
+const cardVariants = {
+  enter: {
+    opacity: 0,
+    y: 20,
+  },
+  center: {
+    opacity: 1,
+    y: 0,
+    x: 0,
+    rotate: 0,
+    transition: { duration: 0.25, ease: [0.4, 0, 0.2, 1] as const },
+  },
+  exitLeft: {
+    opacity: 0,
+    x: -300,
+    rotate: -15,
+    transition: { duration: 0.3, ease: [0.4, 0, 1, 1] as const },
+  },
+  exitRight: {
+    opacity: 0,
+    x: 300,
+    rotate: 15,
+    transition: { duration: 0.3, ease: [0.4, 0, 1, 1] as const },
+  },
+}
+
+// ============================================
+// RESPONSE TYPES (from API_CONTRACT.md)
+// ============================================
 interface RandomBottlesResponse {
   count: number
   results: Fragrance[]
@@ -36,26 +68,92 @@ interface CandidatesResponse {
   results: Fragrance[]
 }
 
+// ============================================
+// REDUCER STATE MACHINE
+// ============================================
+type FinderMode = 'random' | 'candidates'
+
+interface FinderState {
+  currentBottle: Fragrance | null
+  mode: FinderMode
+  candidateQueue: Fragrance[]
+  passLifeUsed: boolean
+  lastLikedId: number | null
+  loadingInitial: boolean
+  actionBusy: boolean
+}
+
+const INITIAL_STATE: FinderState = {
+  currentBottle: null,
+  mode: 'random',
+  candidateQueue: [],
+  passLifeUsed: false,
+  lastLikedId: null,
+  loadingInitial: true,
+  actionBusy: false,
+}
+
+type FinderAction =
+  | { type: 'INIT_DONE'; bottle: Fragrance | null }
+  | { type: 'BUSY_ON' }
+  | { type: 'BUSY_OFF' }
+  | { type: 'LIKED'; nextBottle: Fragrance | null; queue: Fragrance[]; likedId: number }
+  | { type: 'PASS_USE_LIFE'; nextBottle: Fragrance | null; queue: Fragrance[] }
+  | { type: 'PASS_BREAK'; bottle: Fragrance | null }
+  | { type: 'PASS_RANDOM'; bottle: Fragrance | null }
+
+function finderReducer(state: FinderState, action: FinderAction): FinderState {
+  switch (action.type) {
+    case 'INIT_DONE':
+      return { ...INITIAL_STATE, loadingInitial: false, currentBottle: action.bottle }
+    case 'BUSY_ON':
+      return { ...state, actionBusy: true }
+    case 'BUSY_OFF':
+      return { ...state, actionBusy: false }
+    case 'LIKED':
+      return {
+        ...state,
+        currentBottle: action.nextBottle,
+        mode: 'candidates',
+        candidateQueue: action.queue,
+        passLifeUsed: false,
+        lastLikedId: action.likedId,
+        actionBusy: false,
+      }
+    case 'PASS_USE_LIFE':
+      return {
+        ...state,
+        currentBottle: action.nextBottle,
+        candidateQueue: action.queue,
+        passLifeUsed: true,
+        actionBusy: false,
+      }
+    case 'PASS_BREAK':
+      return {
+        ...state,
+        currentBottle: action.bottle,
+        mode: 'random',
+        candidateQueue: [],
+        passLifeUsed: false,
+        lastLikedId: null,
+        actionBusy: false,
+      }
+    case 'PASS_RANDOM':
+      return { ...state, currentBottle: action.bottle, actionBusy: false }
+    default:
+      return state
+  }
+}
+
+// ============================================
+// COMPONENT
+// ============================================
 export default function FinderPage() {
   const { open: openModal } = useFragranceModal()
-
-  // ============================================
-  // NEW STATE MODEL (v2)
-  // ============================================
-  // The single bottle currently displayed to the user
-  const [currentBottle, setCurrentBottle] = useState<Fragrance | null>(null)
-  // Queue of ML-similar candidates (filled after LIKE)
-  const [candidateQueue, setCandidateQueue] = useState<Fragrance[]>([])
-  // The bottle ID the user liked this session (used as seed for candidates)
-  const [lastLikedThisSession, setLastLikedThisSession] = useState<number | null>(null)
-  // "One try" flag: have we already tried fetching candidates after a PASS?
-  const [hasTriedCandidatesThisSession, setHasTriedCandidatesThisSession] = useState(false)
-  // Track all swiped bottle IDs to avoid showing duplicates
-  const [swipedIds, setSwipedIds] = useState<Set<number>>(new Set())
-
-  // UI states
-  const [loading, setLoading] = useState(true)
+  const [state, dispatch] = useReducer(finderReducer, INITIAL_STATE)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [swipeDirection, setSwipeDirection] = useState<SwipeDirection>(null)
+  const prevBottleIdRef = useRef<number | null>(null)
 
   // ============================================
   // AUTH CHECK
@@ -75,276 +173,181 @@ export default function FinderPage() {
   }, [])
 
   // ============================================
-  // API FETCHERS
+  // FETCH HELPERS (public endpoints, no auth)
   // ============================================
-
-  // Fetch a single random bottle for fresh start
-  // CRITICAL: cache: 'no-store' + timestamp + next.revalidate prevents ALL caching
-  const fetchRandomBottle = useCallback(async (): Promise<Fragrance | null> => {
+  const fetchRandom = useCallback(async (): Promise<Fragrance | null> => {
     const url = `${API_BASE_URL}/bottles/random?limit=1&_t=${Date.now()}`
-    console.log('[FETCH] GET random', url)
-    const response = await fetch(url, {
+    const res = await fetch(url, {
       cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
-      next: { revalidate: 0 }
-    } as RequestInit)
-    if (!response.ok) throw new Error('Failed to fetch random bottle')
-    const data: RandomBottlesResponse = await response.json()
-    console.log('[FETCH] Got random bottle:', data.results[0]?.bottle_id, data.results[0]?.name)
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+    })
+    if (!res.ok) throw new Error(`Random fetch failed: ${res.status}`)
+    const data: RandomBottlesResponse = await res.json()
     return data.results[0] || null
   }, [])
 
-  // Fetch personalized candidates based on seed bottle
-  // CRITICAL: cache: 'no-store' + timestamp prevents ALL caching
-  const fetchCandidates = useCallback(async (seedBottleId: number): Promise<Fragrance[]> => {
-    const url = `${API_BASE_URL}/swipe/candidates?seed_bottle_id=${seedBottleId}&_t=${Date.now()}`
-    console.log('[FETCH] GET candidates', url)
-    const response = await fetch(url, {
+  const fetchCandidates = useCallback(async (seedId: number): Promise<Fragrance[]> => {
+    const url = `${API_BASE_URL}/swipe/candidates?seed_bottle_id=${seedId}&_t=${Date.now()}`
+    const res = await fetch(url, {
       cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
-      next: { revalidate: 0 }
-    } as RequestInit)
-    if (!response.ok) {
-      console.warn('Candidates fetch failed')
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+    })
+    if (!res.ok) {
+      console.warn('[FETCH] Candidates failed:', res.status)
       return []
     }
-    const data: CandidatesResponse = await response.json()
-    console.log('[FETCH] Got', data.results.length, 'candidates')
+    const data: CandidatesResponse = await res.json()
     return data.results
   }, [])
 
   // ============================================
-  // MOUNT: FRESH START WITH RANDOM BOTTLE
+  // MOUNT: Fresh random bottle
   // ============================================
-  // Always fetch 1 random bottle on mount, ignoring localStorage.
-  // CRITICAL: Explicitly reset ALL session state to ensure fresh experience
-  // even with client-side navigation, back/forward, or fast refresh.
   useEffect(() => {
-    const initWithRandomBottle = async () => {
-      // EXPLICIT RESET: Clear all session state on every mount
-      setCandidateQueue([])
-      setLastLikedThisSession(null)
-      setHasTriedCandidatesThisSession(false)
-      setSwipedIds(new Set())
-
-      // DEBUG: Log mount state
-      console.log('[FINDER MOUNT] Resetting state and fetching random bottle...')
-
-      setLoading(true)
+    const init = async () => {
       try {
-        const bottle = await fetchRandomBottle()
-        // DEBUG: Log fetched bottle
-        console.log('[FINDER MOUNT] Fetched bottle:', bottle?.bottle_id, bottle?.name)
-        if (bottle) {
-          setCurrentBottle(bottle)
-        }
+        const bottle = await fetchRandom()
+        console.log('[MOUNT] mode=random, passLifeUsed=false, fetched id:', bottle?.bottle_id)
+        dispatch({ type: 'INIT_DONE', bottle })
       } catch (err) {
-        console.error('Failed to fetch initial bottle:', err)
-      } finally {
-        setLoading(false)
+        console.error('[MOUNT] Failed:', err)
+        dispatch({ type: 'INIT_DONE', bottle: null })
       }
     }
-
-    initWithRandomBottle()
-  }, [fetchRandomBottle])
+    init()
+  }, [fetchRandom])
 
   // ============================================
-  // SWIPE LOGGING (authenticated only)
+  // SWIPE LOGGING (auth only, fire-and-forget)
   // ============================================
-  const logSwipe = async (bottleId: number, action: 'like' | 'pass') => {
+  const logSwipe = async (bottleId: number, action: 'like' | 'pass'): Promise<void> => {
     if (!isAuthenticated) return
-
     try {
       await apiPost('/swipes', { bottle_id: bottleId, action })
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setIsAuthenticated(false)
-      }
-      console.error('Failed to log swipe:', err)
+      if (err instanceof ApiError && err.status === 401) setIsAuthenticated(false)
+      console.error('[SWIPE] Failed:', err)
     }
   }
 
-  // ============================================
-  // ADD TO FAVORITES (authenticated only)
-  // ============================================
-  const addToFavorites = async (bottleId: number) => {
+  const addToFavorites = async (bottleId: number): Promise<void> => {
     if (!isAuthenticated) return
-
     try {
       await apiPost('/collections', { bottle_id: bottleId, collection_type: 'favorites' })
     } catch (err) {
-      console.error('Failed to add to favorites:', err)
+      console.error('[FAVORITES] Failed:', err)
     }
   }
 
   // ============================================
-  // HELPER: Filter out already-swiped bottles
+  // LIKE HANDLER
+  // Enter/continue personalized candidate cycle.
+  // Always replaces queue with fresh candidates.
+  // Resets passLifeUsed (new like = new life).
   // ============================================
-  const filterSwiped = useCallback((bottles: Fragrance[], alreadySwiped: Set<number>): Fragrance[] => {
-    return bottles.filter(b => !alreadySwiped.has(b.bottle_id))
-  }, [])
-
-  // ============================================
-  // LIKE HANDLER: Immediate Personalization
-  // ============================================
-  // When user likes a bottle:
-  // 1. Log swipe + add to favorites (fire and forget)
-  // 2. Update localStorage seed (for cross-session persistence)
-  // 3. Set lastLikedThisSession (for immediate candidate fetching)
-  // 4. Fetch candidates immediately using this bottle as seed
-  // 5. Replace candidateQueue with fresh candidates
-  // 6. Show next personalized bottle immediately
-  // 7. Reset hasTriedCandidatesThisSession (new like = new try allowance)
   const handleLike = async () => {
-    if (!currentBottle) return
+    if (!state.currentBottle || state.actionBusy) return
 
-    // DEBUG: Log handler entry
-    console.log('[LIKE HANDLER] Fired for bottle:', currentBottle.bottle_id, currentBottle.name)
+    const bottleId = state.currentBottle.bottle_id
 
-    const likedBottleId = currentBottle.bottle_id
-    const newSwipedIds = new Set([...swipedIds, likedBottleId])
+    // Set animation direction BEFORE changing bottle
+    setSwipeDirection('right')
+    prevBottleIdRef.current = bottleId
 
-    // Mark as swiped
-    setSwipedIds(newSwipedIds)
+    dispatch({ type: 'BUSY_ON' })
 
-    // Fire and forget: log swipe + add to favorites
-    logSwipe(likedBottleId, 'like')
-    addToFavorites(likedBottleId)
-
-    // Persist to localStorage for cross-session use (though we don't use it on mount)
-    localStorage.setItem(LOCALSTORAGE_KEY, likedBottleId.toString())
-
-    // Update session state
-    setLastLikedThisSession(likedBottleId)
-    setHasTriedCandidatesThisSession(false) // Reset the "one try" flag
-
-    // Show loading state
-    setLoading(true)
+    logSwipe(bottleId, 'like')
+    addToFavorites(bottleId)
 
     try {
-      // Fetch candidates immediately using the liked bottle as seed
-      console.log('[LIKE HANDLER] Fetching candidates for seed:', likedBottleId)
-      const candidates = await fetchCandidates(likedBottleId)
-      const filtered = filterSwiped(candidates, newSwipedIds)
-      console.log('[LIKE HANDLER] Got', filtered.length, 'candidates after filter')
+      const candidates = await fetchCandidates(bottleId)
 
-      if (filtered.length > 0) {
-        // Pop first candidate as next bottle, rest goes to queue
-        const [nextBottle, ...rest] = filtered
-        console.log('[LIKE HANDLER] Showing candidate:', nextBottle.bottle_id, nextBottle.name)
-        setCurrentBottle(nextBottle)
-        setCandidateQueue(rest)
+      let nextBottle: Fragrance | null
+      let queue: Fragrance[]
+
+      if (candidates.length > 0) {
+        nextBottle = candidates[0]
+        queue = candidates.slice(1)
       } else {
-        // No candidates available, fall back to random
-        console.log('[LIKE HANDLER] No candidates, falling back to random')
-        const randomBottle = await fetchRandomBottle()
-        setCurrentBottle(randomBottle)
-        setCandidateQueue([])
+        nextBottle = await fetchRandom()
+        queue = []
       }
+
+      console.log('[ANIM] direction=right, prev=' + bottleId + ', next=' + nextBottle?.bottle_id)
+      console.log('[LIKE]', bottleId, 'candidates:', candidates.length, 'next:', nextBottle?.bottle_id)
+      dispatch({ type: 'LIKED', nextBottle, queue, likedId: bottleId })
     } catch (err) {
-      console.error('Failed to fetch candidates after like:', err)
-      // Fall back to random
-      try {
-        const randomBottle = await fetchRandomBottle()
-        setCurrentBottle(randomBottle)
-        setCandidateQueue([])
-      } catch {
-        setCurrentBottle(null)
-      }
-    } finally {
-      setLoading(false)
+      console.error('[LIKE] Error:', err)
+      setSwipeDirection(null)
+      dispatch({ type: 'BUSY_OFF' })
     }
   }
 
   // ============================================
-  // PASS HANDLER: "One Try Then Reset" Rule
+  // PASS HANDLER
+  // "One life" rule:
+  //   candidates + life unused → advance in queue (use life)
+  //   candidates + life used   → BREAK cycle → random
+  //   random                   → fetch new random
   // ============================================
-  // When user passes on a bottle:
-  // 1) If candidateQueue has items → pop next candidate
-  // 2) Else if lastLikedThisSession AND !hasTriedCandidatesThisSession:
-  //    - Fetch candidates ONCE using lastLikedThisSession as seed
-  //    - Set hasTriedCandidatesThisSession = true
-  //    - Show next candidate from results
-  // 3) Else → RESET CYCLE:
-  //    - Fetch new random bottle
-  //    - Clear candidateQueue, lastLikedThisSession, hasTriedCandidatesThisSession
   const handlePass = async () => {
-    if (!currentBottle) return
+    if (!state.currentBottle || state.actionBusy) return
 
-    // DEBUG: Log handler entry and state
-    console.log('[PASS HANDLER] Fired for bottle:', currentBottle.bottle_id, currentBottle.name)
-    console.log('[PASS HANDLER] State:', {
-      candidateQueueLength: candidateQueue.length,
-      lastLikedThisSession,
-      hasTriedCandidatesThisSession
-    })
+    const bottleId = state.currentBottle.bottle_id
+    const { mode, passLifeUsed, candidateQueue, lastLikedId } = state
 
-    const passedBottleId = currentBottle.bottle_id
-    const newSwipedIds = new Set([...swipedIds, passedBottleId])
+    // Set animation direction BEFORE changing bottle
+    setSwipeDirection('left')
+    prevBottleIdRef.current = bottleId
 
-    // Mark as swiped
-    setSwipedIds(newSwipedIds)
-
-    // Fire and forget: log swipe
-    logSwipe(passedBottleId, 'pass')
-
-    // Show loading state
-    setLoading(true)
+    dispatch({ type: 'BUSY_ON' })
+    logSwipe(bottleId, 'pass')
 
     try {
-      // Check if we have items in candidateQueue first
-      const availableInQueue = filterSwiped(candidateQueue, newSwipedIds)
+      if (mode === 'candidates') {
+        if (!passLifeUsed) {
+          // USE THE ONE LIFE
+          let nextBottle: Fragrance | null
+          let queue: Fragrance[]
 
-      if (availableInQueue.length > 0) {
-        // Still have candidates in queue, pop next one
-        console.log('[PASS HANDLER] Branch: Popping from queue')
-        const [nextBottle, ...rest] = availableInQueue
-        setCurrentBottle(nextBottle)
-        setCandidateQueue(rest)
-      } else if (lastLikedThisSession && !hasTriedCandidatesThisSession) {
-        // "One Try" Rule: We have a recent like and haven't tried candidates yet
-        // Give the recommender one try to find something the user likes
-        console.log('[PASS HANDLER] Branch: One Try - fetching candidates for seed', lastLikedThisSession)
-        setHasTriedCandidatesThisSession(true)
+          if (candidateQueue.length > 0) {
+            nextBottle = candidateQueue[0]
+            queue = candidateQueue.slice(1)
+          } else if (lastLikedId) {
+            const refetched = await fetchCandidates(lastLikedId)
+            if (refetched.length > 0) {
+              nextBottle = refetched[0]
+              queue = refetched.slice(1)
+            } else {
+              nextBottle = await fetchRandom()
+              queue = []
+            }
+          } else {
+            nextBottle = await fetchRandom()
+            queue = []
+          }
 
-        const candidates = await fetchCandidates(lastLikedThisSession)
-        const filtered = filterSwiped(candidates, newSwipedIds)
-        console.log('[PASS HANDLER] One Try - got', filtered.length, 'candidates after filter')
-
-        if (filtered.length > 0) {
-          const [nextBottle, ...rest] = filtered
-          console.log('[PASS HANDLER] One Try - showing candidate:', nextBottle.bottle_id, nextBottle.name)
-          setCurrentBottle(nextBottle)
-          setCandidateQueue(rest)
+          console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + nextBottle?.bottle_id)
+          console.log('[PASS]', bottleId, 'mode=candidates, life: false→true, next:', nextBottle?.bottle_id)
+          dispatch({ type: 'PASS_USE_LIFE', nextBottle, queue })
         } else {
-          // No candidates, fall back to random
-          console.log('[PASS HANDLER] One Try - no candidates, falling back to random')
-          const randomBottle = await fetchRandomBottle()
-          setCurrentBottle(randomBottle)
-          setCandidateQueue([])
+          // LIFE ALREADY USED → BREAK CYCLE
+          const randomBottle = await fetchRandom()
+          console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + randomBottle?.bottle_id)
+          console.log('[PASS]', bottleId, 'mode=candidates, life=used → BREAK, next:', randomBottle?.bottle_id)
+          dispatch({ type: 'PASS_BREAK', bottle: randomBottle })
         }
       } else {
-        // RESET CYCLE: No recent like OR already tried candidates
-        // Must reset ALL session state for fresh discovery
-        console.log('[PASS HANDLER] Branch: RESET CYCLE - fetching new random bottle')
-        const randomBottle = await fetchRandomBottle()
-        console.log('[PASS HANDLER] RESET - got bottle:', randomBottle?.bottle_id, randomBottle?.name)
-        setCurrentBottle(randomBottle)
-        setCandidateQueue([])
-        setHasTriedCandidatesThisSession(false)
-        setLastLikedThisSession(null)
+        // RANDOM MODE
+        const randomBottle = await fetchRandom()
+        console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + randomBottle?.bottle_id)
+        console.log('[PASS]', bottleId, 'mode=random, next:', randomBottle?.bottle_id)
+        dispatch({ type: 'PASS_RANDOM', bottle: randomBottle })
       }
     } catch (err) {
-      console.error('Failed to get next bottle after pass:', err)
-      try {
-        const randomBottle = await fetchRandomBottle()
-        setCurrentBottle(randomBottle)
-        setCandidateQueue([])
-      } catch {
-        setCurrentBottle(null)
-      }
-    } finally {
-      setLoading(false)
+      console.error('[PASS] Error:', err)
+      setSwipeDirection(null)
+      dispatch({ type: 'BUSY_OFF' })
     }
   }
 
@@ -352,15 +355,32 @@ export default function FinderPage() {
   // CARD CLICK: Open Modal
   // ============================================
   const handleCardClick = () => {
-    if (currentBottle) {
-      openModal(currentBottle)
-    }
+    if (state.currentBottle) openModal(state.currentBottle)
   }
 
   // ============================================
-  // RENDER: Loading State
+  // DRAG HANDLERS: Swipe gesture
   // ============================================
-  if (loading) {
+  const handleDragEnd = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+    if (state.actionBusy) return
+
+    const { offset } = info
+    if (offset.x > SWIPE_THRESHOLD) {
+      // Swiped right → Like
+      console.log('[DRAG] threshold crossed: right → Like')
+      handleLike()
+    } else if (offset.x < -SWIPE_THRESHOLD) {
+      // Swiped left → Pass
+      console.log('[DRAG] threshold crossed: left → Pass')
+      handlePass()
+    }
+    // If within threshold, card snaps back (handled by Framer Motion)
+  }
+
+  // ============================================
+  // RENDER: Initial Loading (mount only)
+  // ============================================
+  if (state.loadingInitial) {
     return (
       <div className="min-h-screen bg-stone-50">
         <nav className="bg-white border-b border-neutral-200">
@@ -368,9 +388,10 @@ export default function FinderPage() {
             <div className="flex justify-between items-center h-[72px]">
               <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">FRAGRANCE</h1>
               <div className="flex items-center gap-10">
+                <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
                 <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Finder</a>
                 <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
-                <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Profile</a>
+                <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Collection</a>
               </div>
               <button className="w-8 h-8 flex items-center justify-center">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -393,15 +414,15 @@ export default function FinderPage() {
   // ============================================
   return (
     <div className="min-h-screen bg-stone-50">
-      {/* Navigation bar */}
       <nav className="bg-white border-b border-neutral-200">
         <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
           <div className="flex justify-between items-center h-[72px]">
             <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">FRAGRANCE</h1>
             <div className="flex items-center gap-10">
+              <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
               <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Finder</a>
               <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
-              <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Profile</a>
+              <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Collection</a>
             </div>
             <button className="w-8 h-8 flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -414,7 +435,6 @@ export default function FinderPage() {
       </nav>
 
       <main className="max-w-[1400px] mx-auto px-8 lg:px-14 py-20">
-        {/* Page header */}
         <div className="text-center mb-12">
           <h2 className="font-serif text-[42px] font-light text-neutral-900 mb-4 leading-tight">Fragrance Finder</h2>
           <p className="text-[15px] font-light text-neutral-500">
@@ -422,114 +442,127 @@ export default function FinderPage() {
           </p>
         </div>
 
-        {/* Centered fragrance card */}
         <div className="max-w-md mx-auto">
-          {currentBottle ? (
-            <>
-              <button
-                onClick={handleCardClick}
-                className="w-full bg-white border border-neutral-200 p-8 text-left hover:border-neutral-300 transition-colors"
+          <AnimatePresence mode="wait" initial={false}>
+            {state.currentBottle ? (
+              <motion.div
+                key={state.currentBottle.bottle_id}
+                variants={cardVariants}
+                initial="enter"
+                animate="center"
+                exit={swipeDirection === 'right' ? 'exitRight' : 'exitLeft'}
+                drag="x"
+                dragConstraints={{ left: 0, right: 0 }}
+                dragElastic={0.7}
+                onDragEnd={handleDragEnd}
+                onAnimationComplete={() => setSwipeDirection(null)}
+                className="cursor-grab active:cursor-grabbing"
               >
-                {/* Fragrance name and brand at top */}
-                <div className="text-center mb-6">
-                  <h3 className="font-serif text-[32px] font-light text-neutral-900 mb-2 leading-tight">
-                    {formatDisplayText(currentBottle.name)}
-                  </h3>
-                  <p className="text-[13px] font-normal text-neutral-500 uppercase tracking-wider">
-                    {formatDisplayText(currentBottle.brand)}
-                  </p>
-                </div>
+                <button
+                  onClick={handleCardClick}
+                  className="w-full bg-white border border-neutral-200 p-8 text-left hover:border-neutral-300 transition-colors"
+                >
+                  <div className="text-center mb-6">
+                    <h3 className="font-serif text-[32px] font-light text-neutral-900 mb-2 leading-tight">
+                      {formatDisplayText(state.currentBottle.name)}
+                    </h3>
+                    <p className="text-[13px] font-normal text-neutral-500 uppercase tracking-wider">
+                      {formatDisplayText(state.currentBottle.brand)}
+                    </p>
+                  </div>
 
-                {/* Fragrance image */}
-                <div className="aspect-[3/4] bg-neutral-200 mb-8 relative">
-                  {currentBottle.image_url ? (
-                    <img
-                      src={currentBottle.image_url}
-                      alt={`${currentBottle.brand} ${currentBottle.name}`}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <span className="text-[13px] font-light text-neutral-500 tracking-wider uppercase">FRAGRANCE</span>
+                  <div className="aspect-[3/4] bg-neutral-200 mb-8 relative">
+                    {state.currentBottle.image_url ? (
+                      <img
+                        src={state.currentBottle.image_url}
+                        alt={`${state.currentBottle.brand} ${state.currentBottle.name}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-[13px] font-light text-neutral-500 tracking-wider uppercase">FRAGRANCE</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mb-4">
+                    <p className="text-[11px] font-normal text-neutral-500 uppercase tracking-wider mb-3 text-center">MAIN ACCORDS</p>
+                    <div className="flex flex-wrap gap-2 justify-center">
+                      {state.currentBottle.main_accords.slice(0, 5).map((accord, idx) => (
+                        <span
+                          key={idx}
+                          className={`text-[11px] font-normal px-2.5 py-1 ${getAccordColor(accord)}`}
+                        >
+                          {formatDisplayText(accord)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {state.currentBottle.rating_value && (
+                    <div className="text-center mt-4">
+                      <span className="text-[13px] font-light text-neutral-500">
+                        {state.currentBottle.rating_value.toFixed(1)} ★
+                        {state.currentBottle.rating_count && ` (${state.currentBottle.rating_count.toLocaleString()})`}
+                      </span>
                     </div>
                   )}
-                </div>
 
-                {/* Main accords section */}
-                <div className="mb-4">
-                  <p className="text-[11px] font-normal text-neutral-500 uppercase tracking-wider mb-3 text-center">MAIN ACCORDS</p>
-                  <div className="flex flex-wrap gap-2 justify-center">
-                    {currentBottle.main_accords.slice(0, 5).map((accord, idx) => (
-                      <span
-                        key={idx}
-                        className={`text-[11px] font-normal px-2.5 py-1 ${getAccordColor(accord)}`}
-                      >
-                        {formatDisplayText(accord)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Rating if available */}
-                {currentBottle.rating_value && (
-                  <div className="text-center mt-4">
-                    <span className="text-[13px] font-light text-neutral-500">
-                      {currentBottle.rating_value.toFixed(1)} ★
-                      {currentBottle.rating_count && ` (${currentBottle.rating_count.toLocaleString()})`}
-                    </span>
-                  </div>
-                )}
-
-                <p className="text-[11px] font-light text-neutral-400 text-center mt-4">
-                  Tap for details
+                  <p className="text-[11px] font-light text-neutral-400 text-center mt-4">
+                    Tap for details · Drag to swipe
+                  </p>
+                </button>
+              </motion.div>
+            ) : (
+              <div className="bg-white border border-neutral-200 p-16 text-center">
+                <h3 className="font-serif text-[28px] font-light text-neutral-900 mb-4 leading-tight">
+                  No More Fragrances
+                </h3>
+                <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-10 max-w-md mx-auto">
+                  You&apos;ve gone through all available fragrances. Check back later for more discoveries.
                 </p>
-              </button>
+                <div className="flex gap-4 justify-center">
+                  <a
+                    href="/browse"
+                    className="px-8 py-3.5 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors"
+                  >
+                    Explore Collection
+                  </a>
+                  <a
+                    href="/collection"
+                    className="px-8 py-3.5 border border-neutral-300 text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors"
+                  >
+                    View Profile
+                  </a>
+                </div>
+              </div>
+            )}
+          </AnimatePresence>
 
-              {/* Action buttons */}
-              <div className="grid grid-cols-2 gap-4 mt-8">
-                <button
-                  onClick={handlePass}
-                  className="px-8 py-4 border border-neutral-300 text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors flex items-center justify-center gap-2"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  Pass
-                </button>
-                <button
-                  onClick={handleLike}
-                  className="px-8 py-4 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
-                  </svg>
-                  Like
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="bg-white border border-neutral-200 p-16 text-center">
-              <h3 className="font-serif text-[28px] font-light text-neutral-900 mb-4 leading-tight">
-                No More Fragrances
-              </h3>
-              <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-10 max-w-md mx-auto">
-                You&apos;ve gone through all available fragrances. Check back later for more discoveries.
-              </p>
-              <div className="flex gap-4 justify-center">
-                <a
-                  href="/browse"
-                  className="px-8 py-3.5 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors"
-                >
-                  Explore Collection
-                </a>
-                <a
-                  href="/collection"
-                  className="px-8 py-3.5 border border-neutral-300 text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors"
-                >
-                  View Profile
-                </a>
-              </div>
+          {/* Action buttons — outside AnimatePresence, disabled during async */}
+          {state.currentBottle && (
+            <div className="grid grid-cols-2 gap-4 mt-8">
+              <button
+                onClick={handlePass}
+                disabled={state.actionBusy}
+                className={`px-8 py-4 border border-neutral-300 text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors flex items-center justify-center gap-2 ${state.actionBusy ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                Pass
+              </button>
+              <button
+                onClick={handleLike}
+                disabled={state.actionBusy}
+                className={`px-8 py-4 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2 ${state.actionBusy ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                </svg>
+                Like
+              </button>
             </div>
           )}
         </div>
