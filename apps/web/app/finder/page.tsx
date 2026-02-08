@@ -1,12 +1,16 @@
 /**
  * Finder page — Tinder-style swipe interface for discovering fragrances.
  *
- * State Machine (v3 — one-life candidate cycle):
- *   Mount  → fetch 1 random bottle, mode="random"
- *   LIKE   → POST /swipes, POST /collections, fetch candidates, mode="candidates", passLifeUsed=false
- *   PASS in candidates, life unused → advance in queue, passLifeUsed=true
- *   PASS in candidates, life used   → BREAK cycle → fetch random, mode="random"
+ * State Machine (v4 — seenIds dedupe + queue refill):
+ *   Mount  → fetch 1 random bottle, mode="random", add to seenIds
+ *   LIKE   → fetch candidates, DEDUPE against seenIds, consume first, mode="candidates"
+ *   PASS in candidates, life unused → consume from queue (use life)
+ *   PASS in candidates, life used   → BREAK cycle → fetch random
  *   PASS in random                  → fetch random
+ *   REFILL → when queue < 10, fetch more candidates using lastLikedId, dedupe, append
+ *
+ * Key fix (v4): seenIds prevents showing duplicates within session.
+ * Every shown bottle is added to seenIds. Candidates are filtered before use.
  */
 
 'use client'
@@ -69,7 +73,7 @@ interface CandidatesResponse {
 }
 
 // ============================================
-// REDUCER STATE MACHINE
+// REDUCER STATE MACHINE (v4 — seenIds dedupe)
 // ============================================
 type FinderMode = 'random' | 'candidates'
 
@@ -79,6 +83,7 @@ interface FinderState {
   candidateQueue: Fragrance[]
   passLifeUsed: boolean
   lastLikedId: number | null
+  seenIds: Record<number, true>  // Track all shown bottle_ids for dedupe
   loadingInitial: boolean
   actionBusy: boolean
 }
@@ -89,6 +94,7 @@ const INITIAL_STATE: FinderState = {
   candidateQueue: [],
   passLifeUsed: false,
   lastLikedId: null,
+  seenIds: {},
   loadingInitial: true,
   actionBusy: false,
 }
@@ -98,19 +104,25 @@ type FinderAction =
   | { type: 'BUSY_ON' }
   | { type: 'BUSY_OFF' }
   | { type: 'LIKED'; nextBottle: Fragrance | null; queue: Fragrance[]; likedId: number }
-  | { type: 'PASS_USE_LIFE'; nextBottle: Fragrance | null; queue: Fragrance[] }
+  | { type: 'PASS_CONSUME'; nextBottle: Fragrance | null; queue: Fragrance[] }
   | { type: 'PASS_BREAK'; bottle: Fragrance | null }
   | { type: 'PASS_RANDOM'; bottle: Fragrance | null }
+  | { type: 'REFILL_QUEUE'; additionalCandidates: Fragrance[] }
 
 function finderReducer(state: FinderState, action: FinderAction): FinderState {
   switch (action.type) {
-    case 'INIT_DONE':
-      return { ...INITIAL_STATE, loadingInitial: false, currentBottle: action.bottle }
+    case 'INIT_DONE': {
+      const newSeenIds: Record<number, true> = {}
+      if (action.bottle) newSeenIds[action.bottle.bottle_id] = true
+      return { ...INITIAL_STATE, loadingInitial: false, currentBottle: action.bottle, seenIds: newSeenIds }
+    }
     case 'BUSY_ON':
       return { ...state, actionBusy: true }
     case 'BUSY_OFF':
       return { ...state, actionBusy: false }
-    case 'LIKED':
+    case 'LIKED': {
+      const newSeenIds = { ...state.seenIds }
+      if (action.nextBottle) newSeenIds[action.nextBottle.bottle_id] = true
       return {
         ...state,
         currentBottle: action.nextBottle,
@@ -118,28 +130,47 @@ function finderReducer(state: FinderState, action: FinderAction): FinderState {
         candidateQueue: action.queue,
         passLifeUsed: false,
         lastLikedId: action.likedId,
+        seenIds: newSeenIds,
         actionBusy: false,
       }
-    case 'PASS_USE_LIFE':
+    }
+    case 'PASS_CONSUME': {
+      const newSeenIds = { ...state.seenIds }
+      if (action.nextBottle) newSeenIds[action.nextBottle.bottle_id] = true
       return {
         ...state,
         currentBottle: action.nextBottle,
         candidateQueue: action.queue,
         passLifeUsed: true,
+        seenIds: newSeenIds,
         actionBusy: false,
       }
-    case 'PASS_BREAK':
+    }
+    case 'PASS_BREAK': {
+      const newSeenIds = { ...state.seenIds }
+      if (action.bottle) newSeenIds[action.bottle.bottle_id] = true
       return {
         ...state,
         currentBottle: action.bottle,
         mode: 'random',
         candidateQueue: [],
         passLifeUsed: false,
-        lastLikedId: null,
+        // Keep lastLikedId for potential refetch, keep seenIds
+        seenIds: newSeenIds,
         actionBusy: false,
       }
-    case 'PASS_RANDOM':
-      return { ...state, currentBottle: action.bottle, actionBusy: false }
+    }
+    case 'PASS_RANDOM': {
+      const newSeenIds = { ...state.seenIds }
+      if (action.bottle) newSeenIds[action.bottle.bottle_id] = true
+      return { ...state, currentBottle: action.bottle, seenIds: newSeenIds, actionBusy: false }
+    }
+    case 'REFILL_QUEUE': {
+      // Append new candidates to queue (already deduped by caller)
+      const combined = [...state.candidateQueue, ...action.additionalCandidates]
+      // Cap at 80 to prevent unbounded growth
+      return { ...state, candidateQueue: combined.slice(0, 80) }
+    }
     default:
       return state
   }
@@ -240,15 +271,26 @@ export default function FinderPage() {
   }
 
   // ============================================
-  // LIKE HANDLER
-  // Enter/continue personalized candidate cycle.
-  // Always replaces queue with fresh candidates.
-  // Resets passLifeUsed (new like = new life).
+  // DEDUPE HELPER
+  // Filter out bottles already in seenIds
+  // ============================================
+  const dedupeBottles = useCallback((bottles: Fragrance[], seenIds: Record<number, true>, seedId?: number): Fragrance[] => {
+    return bottles.filter(b => {
+      if (seenIds[b.bottle_id]) return false
+      if (seedId !== undefined && b.bottle_id === seedId) return false
+      return true
+    })
+  }, [])
+
+  // ============================================
+  // LIKE HANDLER (v4 — with dedupe)
+  // Fetch fresh candidates, dedupe against seenIds, consume queue.
   // ============================================
   const handleLike = async () => {
     if (!state.currentBottle || state.actionBusy) return
 
     const bottleId = state.currentBottle.bottle_id
+    const { seenIds } = state
 
     // Set animation direction BEFORE changing bottle
     setSwipeDirection('right')
@@ -260,21 +302,31 @@ export default function FinderPage() {
     addToFavorites(bottleId)
 
     try {
-      const candidates = await fetchCandidates(bottleId)
+      const rawCandidates = await fetchCandidates(bottleId)
+
+      // DEBUG: Log raw fetch results
+      console.log('[LIKE] Raw candidates fetched:', rawCandidates.length,
+        'first10:', rawCandidates.slice(0, 10).map(b => b.bottle_id))
+
+      // DEDUPE: Remove seen bottles and the seed itself
+      const deduped = dedupeBottles(rawCandidates, seenIds, bottleId)
+      console.log('[LIKE] After dedupe:', deduped.length, 'seenIds size:', Object.keys(seenIds).length)
 
       let nextBottle: Fragrance | null
       let queue: Fragrance[]
 
-      if (candidates.length > 0) {
-        nextBottle = candidates[0]
-        queue = candidates.slice(1)
+      if (deduped.length > 0) {
+        nextBottle = deduped[0]
+        queue = deduped.slice(1)
       } else {
+        // Fallback to random if all candidates were seen
+        console.log('[LIKE] All candidates seen, falling back to random')
         nextBottle = await fetchRandom()
         queue = []
       }
 
       console.log('[ANIM] direction=right, prev=' + bottleId + ', next=' + nextBottle?.bottle_id)
-      console.log('[LIKE]', bottleId, 'candidates:', candidates.length, 'next:', nextBottle?.bottle_id)
+      console.log('[LIKE] RESULT: next=' + nextBottle?.bottle_id + ', queueLen=' + queue.length)
       dispatch({ type: 'LIKED', nextBottle, queue, likedId: bottleId })
     } catch (err) {
       console.error('[LIKE] Error:', err)
@@ -284,17 +336,17 @@ export default function FinderPage() {
   }
 
   // ============================================
-  // PASS HANDLER
-  // "One life" rule:
-  //   candidates + life unused → advance in queue (use life)
-  //   candidates + life used   → BREAK cycle → random
-  //   random                   → fetch new random
+  // PASS HANDLER (v4 — consume queue, one-life rule)
+  // candidates + life unused → consume from queue (use life)
+  // candidates + life used   → BREAK cycle → random
+  // random                   → fetch new random
+  // PASS never re-fetches candidates; only LIKE does.
   // ============================================
   const handlePass = async () => {
     if (!state.currentBottle || state.actionBusy) return
 
     const bottleId = state.currentBottle.bottle_id
-    const { mode, passLifeUsed, candidateQueue, lastLikedId } = state
+    const { mode, passLifeUsed, candidateQueue, seenIds } = state
 
     // Set animation direction BEFORE changing bottle
     setSwipeDirection('left')
@@ -306,42 +358,39 @@ export default function FinderPage() {
     try {
       if (mode === 'candidates') {
         if (!passLifeUsed) {
-          // USE THE ONE LIFE
+          // USE THE ONE LIFE — consume next from queue
+          // Filter queue against seenIds in case of stale entries
+          const validQueue = candidateQueue.filter(b => !seenIds[b.bottle_id])
+
           let nextBottle: Fragrance | null
           let queue: Fragrance[]
 
-          if (candidateQueue.length > 0) {
-            nextBottle = candidateQueue[0]
-            queue = candidateQueue.slice(1)
-          } else if (lastLikedId) {
-            const refetched = await fetchCandidates(lastLikedId)
-            if (refetched.length > 0) {
-              nextBottle = refetched[0]
-              queue = refetched.slice(1)
-            } else {
-              nextBottle = await fetchRandom()
-              queue = []
-            }
+          if (validQueue.length > 0) {
+            nextBottle = validQueue[0]
+            queue = validQueue.slice(1)
+            console.log('[PASS] Consuming from queue. queueLen before:', candidateQueue.length, 'after:', queue.length)
           } else {
+            // Queue exhausted — break to random
+            console.log('[PASS] Queue empty after dedupe, breaking to random')
             nextBottle = await fetchRandom()
             queue = []
           }
 
           console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + nextBottle?.bottle_id)
-          console.log('[PASS]', bottleId, 'mode=candidates, life: false→true, next:', nextBottle?.bottle_id)
-          dispatch({ type: 'PASS_USE_LIFE', nextBottle, queue })
+          console.log('[PASS] mode=candidates, life: false→true, next:', nextBottle?.bottle_id, 'queueLen:', queue.length)
+          dispatch({ type: 'PASS_CONSUME', nextBottle, queue })
         } else {
           // LIFE ALREADY USED → BREAK CYCLE
           const randomBottle = await fetchRandom()
           console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + randomBottle?.bottle_id)
-          console.log('[PASS]', bottleId, 'mode=candidates, life=used → BREAK, next:', randomBottle?.bottle_id)
+          console.log('[PASS] mode=candidates, life=used → BREAK, next:', randomBottle?.bottle_id)
           dispatch({ type: 'PASS_BREAK', bottle: randomBottle })
         }
       } else {
         // RANDOM MODE
         const randomBottle = await fetchRandom()
         console.log('[ANIM] direction=left, prev=' + bottleId + ', next=' + randomBottle?.bottle_id)
-        console.log('[PASS]', bottleId, 'mode=random, next:', randomBottle?.bottle_id)
+        console.log('[PASS] mode=random, next:', randomBottle?.bottle_id)
         dispatch({ type: 'PASS_RANDOM', bottle: randomBottle })
       }
     } catch (err) {
@@ -350,6 +399,40 @@ export default function FinderPage() {
       dispatch({ type: 'BUSY_OFF' })
     }
   }
+
+  // ============================================
+  // QUEUE REFILL EFFECT
+  // When in candidates mode and queue is low, fetch more candidates
+  // ============================================
+  useEffect(() => {
+    const refillQueue = async () => {
+      const { mode, candidateQueue, lastLikedId, seenIds, actionBusy } = state
+
+      // Only refill in candidates mode, when queue is low, and we have a seed
+      if (mode !== 'candidates' || candidateQueue.length >= 10 || !lastLikedId || actionBusy) {
+        return
+      }
+
+      console.log('[REFILL] Queue low:', candidateQueue.length, 'fetching more from seed:', lastLikedId)
+
+      try {
+        const rawCandidates = await fetchCandidates(lastLikedId)
+        const deduped = dedupeBottles(rawCandidates, seenIds, lastLikedId)
+
+        console.log('[REFILL] Fetched:', rawCandidates.length, 'after dedupe:', deduped.length)
+
+        if (deduped.length > 0) {
+          dispatch({ type: 'REFILL_QUEUE', additionalCandidates: deduped })
+        } else {
+          console.log('[REFILL] No new candidates after dedupe, queue will exhaust naturally')
+        }
+      } catch (err) {
+        console.error('[REFILL] Error:', err)
+      }
+    }
+
+    refillQueue()
+  }, [state.candidateQueue.length, state.mode, state.lastLikedId, state.actionBusy, fetchCandidates, dedupeBottles, state.seenIds])
 
   // ============================================
   // CARD CLICK: Open Modal
@@ -386,19 +469,19 @@ export default function FinderPage() {
         <nav className="bg-white border-b border-neutral-200">
           <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
             <div className="flex justify-between items-center h-[72px]">
-              <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">FRAGRANCE</h1>
+              <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">SNIFTR</h1>
               <div className="flex items-center gap-10">
                 <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
                 <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Finder</a>
                 <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
                 <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Collection</a>
               </div>
-              <button className="w-8 h-8 flex items-center justify-center">
+              <a href="/signin" className="w-8 h-8 flex items-center justify-center">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
-              </button>
+              </a>
             </div>
           </div>
         </nav>
@@ -417,19 +500,19 @@ export default function FinderPage() {
       <nav className="bg-white border-b border-neutral-200">
         <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
           <div className="flex justify-between items-center h-[72px]">
-            <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">FRAGRANCE</h1>
+            <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">SNIFTR</h1>
             <div className="flex items-center gap-10">
               <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
               <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Finder</a>
               <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
               <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Collection</a>
             </div>
-            <button className="w-8 h-8 flex items-center justify-center">
+            <a href="/signin" className="w-8 h-8 flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                 <circle cx="12" cy="7" r="4"></circle>
               </svg>
-            </button>
+            </a>
           </div>
         </div>
       </nav>
@@ -480,7 +563,7 @@ export default function FinderPage() {
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <span className="text-[13px] font-light text-neutral-500 tracking-wider uppercase">FRAGRANCE</span>
+                        <span className="text-[13px] font-light text-neutral-500 tracking-wider uppercase">SNIFTR</span>
                       </div>
                     )}
                   </div>

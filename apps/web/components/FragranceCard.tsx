@@ -27,7 +27,7 @@ export default function FragranceCard({ fragrance, onOpen }: FragranceCardProps)
         ) : (
           <div className="flex h-full items-center justify-center">
             <span className="text-sm tracking-widest text-gray-400">
-              FRAGRANCE
+              SNIFTR
             </span>
           </div>
         )}

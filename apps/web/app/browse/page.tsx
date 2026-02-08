@@ -124,7 +124,7 @@ export default function BrowsePage() {
         <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
           <div className="flex justify-between items-center h-[72px]">
             <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">
-              FRAGRANCE
+              SNIFTR
             </h1>
             <div className="flex items-center gap-10">
               <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">
@@ -140,12 +140,12 @@ export default function BrowsePage() {
                 Collection
               </a>
             </div>
-            <button className="w-8 h-8 flex items-center justify-center">
+            <a href="/signin" className="w-8 h-8 flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                 <circle cx="12" cy="7" r="4"></circle>
               </svg>
-            </button>
+            </a>
           </div>
         </div>
       </nav>

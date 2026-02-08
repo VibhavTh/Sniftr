@@ -1,17 +1,18 @@
 /**
  * Purpose:
- * Sign-up page for creating new user accounts with email/password.
+ * Sign-in page for authenticating existing users with email/password.
  *
  * Responsibilities:
- * - Render sign-up form within the two-panel AuthSplitLayout
- * - Handle form submission via Supabase signUp
- * - Manage loading, error, and success states during account creation
+ * - Render sign-in form within the two-panel AuthSplitLayout
+ * - Handle form submission via Supabase signInWithPassword
+ * - Manage loading and error states during authentication
  * - Show current session banner if already signed in (with sign out option)
- * - Show email confirmation message if required
+ * - Prevent signing in with same email (show "already signed in" error)
+ * - Allow switching accounts by signing out and signing in as different user
  *
  * System context:
- * - Entry point for new users
- * - Uses Supabase Auth for account creation
+ * - Entry point for existing users
+ * - Uses Supabase Auth for authentication
  * - Follows luxury editorial aesthetic (no rounded corners)
  */
 
@@ -23,14 +24,14 @@ import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 import AuthSplitLayout from '@/components/auth/AuthSplitLayout'
 
-export default function SignUpPage() {
+export default function SignInPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [rememberMe, setRememberMe] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [success, setSuccess] = useState(false)
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
 
   // Check if user is already signed in (but don't redirect)
@@ -52,77 +53,37 @@ export default function SignUpPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+
+    // Check if trying to sign in with the same email
+    if (currentUserEmail && email.toLowerCase() === currentUserEmail.toLowerCase()) {
+      setError(`You're already signed in as ${currentUserEmail}`)
+      return
+    }
+
     setLoading(true)
 
-    const { data, error: authError } = await supabase.auth.signUp({
+    // If signed in as different user, sign out first
+    if (currentUserEmail) {
+      await supabase.auth.signOut()
+    }
+
+    const { error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
-      options: {
-        emailRedirectTo: `${window.location.origin}/`
-      }
     })
 
     setLoading(false)
 
     if (authError) {
-      // Handle "User already registered" error with a friendlier message
-      if (authError.message.toLowerCase().includes('already registered') ||
-          authError.message.toLowerCase().includes('already exists')) {
-        setError('This email is already associated with an existing account. Please sign in instead.')
-      } else {
-        setError(authError.message)
-      }
-      return
-    }
-
-    // Check if email confirmation is required
-    if (data.user && !data.session) {
-      setSuccess(true)
+      setError(authError.message)
       return
     }
 
     router.push('/')
   }
 
-  // Success state - email confirmation required
-  if (success) {
-    return (
-      <AuthSplitLayout mode="signup">
-        <div className="text-center py-8">
-          <div className="w-16 h-16 bg-neutral-100 mx-auto mb-6 flex items-center justify-center">
-            <svg className="w-8 h-8 text-neutral-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h2 className="font-serif text-[28px] font-light text-neutral-900 mb-3">Check your email</h2>
-          <p className="text-[15px] font-light text-neutral-500 mb-8">
-            We&apos;ve sent a confirmation link to<br />
-            <strong className="text-neutral-900">{email}</strong>
-          </p>
-          <div className="bg-stone-100 border border-neutral-200 p-6 mb-8 text-left">
-            <p className="text-[13px] font-normal text-neutral-700 mb-3">Next steps:</p>
-            <ol className="text-[13px] font-light text-neutral-600 space-y-2 list-decimal list-inside">
-              <li>Open your email inbox</li>
-              <li>Click the confirmation link</li>
-              <li>Return here and sign in</li>
-            </ol>
-          </div>
-          <Link
-            href="/signin"
-            className="inline-block px-8 py-4 bg-neutral-900 text-white text-[13px] font-normal tracking-widest uppercase hover:bg-neutral-800 transition-colors"
-          >
-            Go to Sign In
-          </Link>
-          <p className="mt-6 text-[13px] font-light text-neutral-400">
-            Didn&apos;t receive the email? Check your spam folder.
-          </p>
-        </div>
-      </AuthSplitLayout>
-    )
-  }
-
   return (
-    <AuthSplitLayout mode="signup">
+    <AuthSplitLayout mode="signin">
       {/* Already signed in banner */}
       {currentUserEmail && (
         <div className="bg-stone-100 border border-neutral-200 p-4 mb-6">
@@ -183,7 +144,7 @@ export default function SignUpPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              placeholder="Create a password"
+              placeholder="Enter your password"
               className="w-full px-4 py-3.5 pr-12 border border-neutral-300 text-[15px] font-light text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:border-neutral-400 transition-colors bg-white"
             />
             <button
@@ -204,9 +165,25 @@ export default function SignUpPage() {
               )}
             </button>
           </div>
-          <p className="mt-2 text-[12px] font-light text-neutral-400">
-            Must be at least 6 characters
-          </p>
+        </div>
+
+        {/* Remember me + Forgot password row */}
+        <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-4 h-4 border border-neutral-300 text-neutral-900 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+            />
+            <span className="text-[13px] font-light text-neutral-600">Remember me</span>
+          </label>
+          <Link
+            href="/forgot-password"
+            className="text-[13px] font-light text-neutral-600 hover:text-neutral-900 transition-colors"
+          >
+            Forgot password?
+          </Link>
         </div>
 
         {/* Error message */}
@@ -222,7 +199,7 @@ export default function SignUpPage() {
           disabled={loading}
           className="w-full py-4 bg-neutral-900 text-white text-[13px] font-normal tracking-widest uppercase hover:bg-neutral-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading ? 'Creating account...' : 'Create Account'}
+          {loading ? 'Signing in...' : 'Sign In'}
         </button>
       </form>
     </AuthSplitLayout>

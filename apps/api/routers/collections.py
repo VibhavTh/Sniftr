@@ -10,48 +10,44 @@ Responsibilities:
 - All endpoints require JWT authentication (user_id extracted from token)
 
 System context:
-- Uses single collections table with collection_type column (Option A design)
+- Uses single collections table with collection_type column
 - UNIQUE constraint on (user_id, bottle_id, collection_type) prevents duplicates
 - Returns normalized bottle cards via normalize_bottle() so frontend can render immediately
 - bottle_id is original_index (int), matching ML model and all other endpoints
+- Uses asyncpg for direct PostgreSQL access to RDS
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from supabase import create_client
-from core.config import settings
+from db import db
 from deps.auth import get_current_user
 from utils.bottle_normalizer import normalize_bottle
 
 
 router = APIRouter()
 
-# Valid collection types — matches CHECK constraint in create_collections.sql
 VALID_TYPES = {"wishlist", "favorites", "personal"}
 
 
-# Check membership status of a bottle across all collection types.
-# Returns boolean flags for wishlist, favorites, personal.
-# Used by frontend to render filled/unfilled hearts and dropdown toggles.
-# Example: GET /collections/status?bottle_id=1234
 @router.get("/collections/status")
 async def get_collection_status(
     bottle_id: int = Query(..., description="Bottle ID (original_index) to check"),
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Check membership status of a bottle across all collection types.
+    Returns boolean flags for wishlist, favorites, personal.
+    """
     user_id = current_user["user_id"]
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # Fetch all collection entries for this user + bottle (0-3 rows max)
-    response = supabase.table("collections") \
-        .select("collection_type") \
-        .eq("user_id", user_id) \
-        .eq("bottle_id", bottle_id) \
-        .execute()
+    query = """
+        SELECT collection_type FROM collections
+        WHERE user_id = $1 AND bottle_id = $2
+    """
+    rows = await db.fetch_all(query, user_id, bottle_id)
 
-    # Convert rows to a set of types for O(1) lookup
-    existing_types = {row["collection_type"] for row in response.data}
+    existing_types = {row["collection_type"] for row in rows}
 
     return {
         "wishlist": "wishlist" in existing_types,
@@ -60,23 +56,20 @@ async def get_collection_status(
     }
 
 
-# Request body schema for POST /collections.
-# Validates bottle_id is an int and collection_type is one of the allowed values.
 class AddToCollectionRequest(BaseModel):
-    bottle_id: int  # original_index value from bottles table
-    collection_type: str  # Must be 'wishlist', 'favorites', or 'personal'
+    bottle_id: int
+    collection_type: str
 
 
-# Add a bottle to a user's collection.
-# Idempotent: if the bottle is already in the collection, returns 200 with already_existed flag
-# instead of raising a conflict error. This lets the frontend fire-and-forget without
-# checking existence first.
 @router.post("/collections")
 async def add_to_collection(
     body: AddToCollectionRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    # Validate collection_type before hitting the database
+    """
+    Add a bottle to a user's collection.
+    Idempotent: uses ON CONFLICT DO NOTHING so duplicates are ignored.
+    """
     if body.collection_type not in VALID_TYPES:
         raise HTTPException(
             status_code=400,
@@ -84,20 +77,14 @@ async def add_to_collection(
         )
 
     user_id = current_user["user_id"]
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # Use upsert to handle duplicates gracefully.
-    # If (user_id, bottle_id, collection_type) already exists, this is a no-op
-    # thanks to the UNIQUE constraint. on_conflict tells PostgREST which columns
-    # define the uniqueness check.
-    response = supabase.table("collections").upsert(
-        {
-            "user_id": user_id,
-            "bottle_id": body.bottle_id,
-            "collection_type": body.collection_type,
-        },
-        on_conflict="user_id,bottle_id,collection_type"
-    ).execute()
+    # UPSERT using ON CONFLICT DO NOTHING (idempotent)
+    query = """
+        INSERT INTO collections (user_id, bottle_id, collection_type)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, bottle_id, collection_type) DO NOTHING
+    """
+    await db.execute(query, user_id, body.bottle_id, body.collection_type)
 
     return {
         "ok": True,
@@ -106,16 +93,15 @@ async def add_to_collection(
     }
 
 
-# Fetch all bottles in a user's collection by type.
-# Returns full normalized bottle cards (not just IDs) so the frontend can render
-# collection views immediately without a second fetch.
-# Results ordered by most recently added (created_at DESC from index).
 @router.get("/collections")
 async def get_collection(
     type: str = Query(..., description="Collection type: wishlist, favorites, or personal"),
     current_user: dict = Depends(get_current_user)
 ):
-    # Validate collection type
+    """
+    Fetch all bottles in a user's collection by type.
+    Returns full normalized bottle cards ordered by most recently added.
+    """
     if type not in VALID_TYPES:
         raise HTTPException(
             status_code=400,
@@ -123,31 +109,29 @@ async def get_collection(
         )
 
     user_id = current_user["user_id"]
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # Fetch collection entries for this user + type, ordered by most recently added
-    collection_response = supabase.table("collections") \
-        .select("bottle_id, created_at") \
-        .eq("user_id", user_id) \
-        .eq("collection_type", type) \
-        .order("created_at", desc=True) \
-        .execute()
+    # Get bottle_ids in collection order (most recent first)
+    collection_query = """
+        SELECT bottle_id FROM collections
+        WHERE user_id = $1 AND collection_type = $2
+        ORDER BY created_at DESC
+    """
+    collection_rows = await db.fetch_all(collection_query, user_id, type)
 
-    # If collection is empty, return early with empty results
-    if not collection_response.data:
+    if not collection_rows:
         return {"collection_type": type, "results": []}
 
-    # Extract bottle IDs in collection order (most recent first)
-    bottle_ids = [row["bottle_id"] for row in collection_response.data]
+    bottle_ids = [row["bottle_id"] for row in collection_rows]
 
-    # Fetch full bottle details from bottles table using original_index
-    bottles_response = supabase.table("bottles") \
-        .select("*") \
-        .in_("original_index", bottle_ids) \
-        .execute()
+    # Fetch bottle details using ANY() for IN clause with array parameter
+    bottles_query = """
+        SELECT * FROM bottles
+        WHERE original_index = ANY($1::int[])
+    """
+    bottle_rows = await db.fetch_all(bottles_query, bottle_ids)
 
-    # Build lookup dict and reconstruct in collection order (most recent first)
-    bottles_by_id = {row["original_index"]: row for row in bottles_response.data}
+    # Preserve collection order (most recent first)
+    bottles_by_id = {row["original_index"]: row for row in bottle_rows}
     results = [normalize_bottle(bottles_by_id[bid]) for bid in bottle_ids if bid in bottles_by_id]
 
     return {
@@ -156,17 +140,16 @@ async def get_collection(
     }
 
 
-# Remove a bottle from a user's collection.
-# Uses bottle_id in path + collection_type as query param to identify the row.
-# Idempotent: returns 200 even if the entry didn't exist (nothing to delete).
-# This lets the frontend toggle collection state without checking existence first.
 @router.delete("/collections/{bottle_id}")
 async def remove_from_collection(
     bottle_id: int,
     type: str = Query(..., description="Collection type: wishlist, favorites, or personal"),
     current_user: dict = Depends(get_current_user)
 ):
-    # Validate collection type
+    """
+    Remove a bottle from a user's collection.
+    Idempotent: returns 200 even if the entry didn't exist.
+    """
     if type not in VALID_TYPES:
         raise HTTPException(
             status_code=400,
@@ -174,16 +157,12 @@ async def remove_from_collection(
         )
 
     user_id = current_user["user_id"]
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    # Delete the matching row. If it doesn't exist, this is a no-op (idempotent).
-    # The UNIQUE index on (user_id, bottle_id, collection_type) ensures at most one row matches.
-    supabase.table("collections") \
-        .delete() \
-        .eq("user_id", user_id) \
-        .eq("bottle_id", bottle_id) \
-        .eq("collection_type", type) \
-        .execute()
+    query = """
+        DELETE FROM collections
+        WHERE user_id = $1 AND bottle_id = $2 AND collection_type = $3
+    """
+    await db.execute(query, user_id, bottle_id, type)
 
     return {
         "ok": True,

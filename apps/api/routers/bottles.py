@@ -9,88 +9,98 @@ Responsibilities:
 - Normalize bottle data into UI-ready format with arrays
 
 System context:
-- All endpoints are public (no auth required for v1)
+- All endpoints are public (no auth required)
 - Results normalized using utils.bottle_normalizer.normalize_bottle
 - Stable ordering on /bottles ensures deterministic pagination
+- Uses asyncpg for direct PostgreSQL access to RDS
 """
 
 from fastapi import APIRouter, HTTPException, Query
 
-from supabase import create_client
-from core.config import settings
+from db import db
 from utils.bottle_normalizer import normalize_bottle
 
 
 router = APIRouter()
 
 
-# Paginated browse endpoint for Explore page.
-# Stable ordering ensures page 1/2/3 are deterministic across requests.
-# Optional q param filters by name OR brand (case-insensitive ilike).
-# IMPORTANT: This route MUST be defined before /bottles/{bottle_id} to avoid route conflict.
 @router.get("/bottles")
 async def get_bottles(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(24, ge=1, le=100, description="Items per page"),
     q: str | None = Query(None, description="Search query (filters name/brand)")
 ):
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    """
+    Paginated browse endpoint for Explore page.
 
-    # Calculate offset for Supabase .range() (0-indexed, inclusive on both ends)
+    Stable ordering ensures page 1/2/3 are deterministic across requests.
+    Optional q param filters by name OR brand (case-insensitive ilike).
+    """
     offset = (page - 1) * limit
 
-    # Build query with count for pagination metadata
-    # count="exact" adds a header with total matching rows
-    query = supabase.table("bottles").select("*", count="exact")
-
-    # Optional search filter: name OR brand contains search term (case-insensitive)
-    # Using ilike for case-insensitive LIKE matching in PostgreSQL
-    # Normalize spaces to wildcards so "dolce gabbana" matches "dolce-gabbana"
     if q and q.strip():
-        search_term = q.strip()
-        # Replace spaces with % wildcard to match both "dolce gabbana" and "dolce-gabbana"
-        normalized_term = search_term.replace(" ", "%")
-        query = query.or_(f"name.ilike.%{normalized_term}%,brand.ilike.%{normalized_term}%")
+        # Search with ILIKE on name/brand
+        # Replace spaces with % wildcard to match "dolce gabbana" and "dolce-gabbana"
+        normalized_term = q.strip().replace(" ", "%")
+        pattern = f"%{normalized_term}%"
 
-    # Apply stable ordering for deterministic pagination:
-    # 1. rating_count DESC → most reviewed first (popularity signal)
-    # 2. rating_value DESC → higher rated among same review count
-    # 3. original_index ASC → deterministic tiebreaker for identical ratings
-    response = query \
-        .order("rating_count", desc=True, nullsfirst=False) \
-        .order("rating_value", desc=True, nullsfirst=False) \
-        .order("original_index", desc=False) \
-        .range(offset, offset + limit - 1) \
-        .execute()
+        # Get total count for pagination
+        count_query = """
+            SELECT COUNT(*) FROM bottles
+            WHERE name ILIKE $1 OR brand ILIKE $1
+        """
+        total = await db.fetch_val(count_query, pattern)
 
-    # Normalize results to UI format with arrays
-    results = [normalize_bottle(row) for row in response.data]
+        # Get paginated results with stable ordering
+        data_query = """
+            SELECT * FROM bottles
+            WHERE name ILIKE $1 OR brand ILIKE $1
+            ORDER BY rating_count DESC NULLS LAST,
+                     rating_value DESC NULLS LAST,
+                     original_index ASC
+            LIMIT $2 OFFSET $3
+        """
+        rows = await db.fetch_all(data_query, pattern, limit, offset)
+    else:
+        # No search - just paginate
+        total = await db.fetch_val("SELECT COUNT(*) FROM bottles")
+
+        data_query = """
+            SELECT * FROM bottles
+            ORDER BY rating_count DESC NULLS LAST,
+                     rating_value DESC NULLS LAST,
+                     original_index ASC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await db.fetch_all(data_query, limit, offset)
+
+    results = [normalize_bottle(row) for row in rows]
 
     return {
         "page": page,
         "limit": limit,
-        "total": response.count,
+        "total": total,
         "results": results
     }
 
 
-# Fetch random bottles for initial swipe queue or exploration.
-# No authentication required - randomness is the same for all users in v1.
-# Returns normalized bottle cards with arrays for accords and notes.
-# Uses PostgreSQL RPC function for true database-level randomness via ORDER BY random().
 @router.get("/bottles/random")
 async def get_random_bottles(
     limit: int = Query(50, ge=1, le=100, description="Number of random bottles to return (1-100)")
 ):
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    """
+    Fetch random bottles for initial swipe queue or exploration.
 
-    # Call PostgreSQL RPC function: get_random_bottles(p_limit)
-    # This executes ORDER BY random() LIMIT p_limit directly in the database,
-    # providing true uniform random sampling across all 24K bottles.
-    response = supabase.rpc("get_random_bottles", {"p_limit": limit}).execute()
-
-    # Normalize each bottle to UI format with arrays
-    results = [normalize_bottle(row) for row in response.data]
+    Uses PostgreSQL ORDER BY random() for true uniform random sampling.
+    No authentication required - randomness is the same for all users in v1.
+    """
+    query = """
+        SELECT * FROM bottles
+        ORDER BY random()
+        LIMIT $1
+    """
+    rows = await db.fetch_all(query, limit)
+    results = [normalize_bottle(row) for row in rows]
 
     return {
         "count": len(results),
@@ -98,40 +108,20 @@ async def get_random_bottles(
     }
 
 
-# Fetch a single bottle by ID for detail modal.
-# No authentication required - public catalog data.
-# Uses original_index as bottle_id (not UUID) for ML model compatibility.
-# Returns normalized bottle with all fields needed for modal display.
 @router.get("/bottles/{bottle_id}")
-async def get_bottle_by_id(
-    bottle_id: int
-):
+async def get_bottle_by_id(bottle_id: int):
     """
-    Get a single bottle by its ID (original_index).
+    Fetch a single bottle by ID for detail modal.
 
-    Args:
-        bottle_id: The bottle's original_index value
-
-    Returns:
-        Normalized bottle object with all fields for detail modal
-
-    Raises:
-        404: If bottle_id doesn't exist in database
+    Uses original_index as bottle_id (not UUID) for ML model compatibility.
     """
-    # Query Supabase for bottle by original_index
-    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-    response = supabase.table("bottles") \
-        .select("*") \
-        .eq("original_index", bottle_id) \
-        .execute()
+    query = "SELECT * FROM bottles WHERE original_index = $1"
+    row = await db.fetch_one(query, bottle_id)
 
-    # Check if bottle exists
-    if not response.data or len(response.data) == 0:
+    if not row:
         raise HTTPException(
             status_code=404,
             detail=f"Bottle with id {bottle_id} not found"
         )
 
-    # Normalize and return single bottle
-    bottle = normalize_bottle(response.data[0])
-    return bottle
+    return normalize_bottle(row)

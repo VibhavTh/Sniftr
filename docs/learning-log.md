@@ -1918,3 +1918,135 @@ Implemented Tinder-style swipe animations on the Finder page using Framer Motion
 3. Extract animation config to shared constants if reused elsewhere
 
 ---
+
+# 2026-02-06 — Session 7: Finder v4 — seenIds Dedupe Fix
+
+## Summary
+Fixed the "5 bottles repeating" bug in the Finder page by adding `seenIds` tracking and proper deduplication. Candidates are now filtered against seen bottles before use, and the queue auto-refills when low.
+
+## Root Cause Analysis
+The bug had three compounding causes:
+1. **No seenIds tracking** — Every candidate fetch could return bottles the user had already seen
+2. **Every LIKE replaced the entire queue** — Instead of consuming from a 50-item queue, each LIKE fetched fresh candidates from the new liked bottle
+3. **ML clustering effect** — Similar bottles recommend each other, causing loops without dedupe
+
+## Decisions
+- **seenIds as Record<number, true>** — Used object map instead of Set for serializable reducer state. Every shown bottle is added to seenIds.
+- **Dedupe at point of use** — `dedupeBottles(candidates, seenIds, seedId)` filters out seen bottles AND the seed bottle before consuming from queue.
+- **Queue refill effect** — When `candidateQueue.length < 10` and in candidates mode, auto-fetch more candidates using lastLikedId, dedupe, and append.
+- **Renamed PASS_USE_LIFE → PASS_CONSUME** — Clearer action name reflecting queue consumption.
+- **Keep seenIds across BREAK** — When breaking to random, seenIds persists to prevent showing bottles seen in previous candidate cycles.
+
+## Pitfalls
+- **Stale seenIds in handlers** — Had to destructure `seenIds` from state at handler start and pass to dedupeBottles, since async operations could see stale closure values.
+- **Queue refill race condition** — The refill effect depends on `candidateQueue.length`, which could trigger multiple refills. Mitigated by checking `actionBusy` and capping queue at 80.
+
+## What I Learned
+- **Dedupe is essential for recommendation loops** — Similar items recommend each other. Without tracking what's been shown, users enter "recommendation clusters" and see the same items repeatedly.
+- **State machine version tracking** — Documenting the state machine version (v4) in the file header helps future developers understand the evolution.
+
+## Files Changed
+- `apps/web/app/finder/page.tsx` — Added seenIds to state, updated reducer with dedupe logic, added dedupeBottles helper, added queue refill effect
+- `docs/agent/FILE_MAP.md` — Updated Finder section with v4 info
+- `docs/agent/WORKFLOW.md` — Updated Finder workflow with v4 state model and actions
+
+## Next Steps
+1. Remove debug console.logs after confirming fix works
+2. Consider persisting seenIds to localStorage if session persistence is needed
+3. Test with extended swipe sessions (50+ swipes) to verify no duplicates
+
+---
+
+# 2026-02-07 — Session 8: RDS Migration with asyncpg
+
+## Summary
+Migrated all backend database operations from Supabase client to asyncpg for direct PostgreSQL access. Implemented "Hybrid Option B-Lite": data storage moved to PostgreSQL (local/RDS) while keeping Supabase Auth for JWT verification via JWKS.
+
+## Decisions
+- **asyncpg over SQLAlchemy** — Chose asyncpg directly for minimal overhead and full SQL control. No ORM abstraction needed for our use case.
+- **Connection pool singleton** — Created `db.py` with a `Database` class wrapping asyncpg pool. Pool is initialized in `main.py` lifespan (startup) and closed on shutdown.
+- **Keep Supabase Auth** — Auth continues to work via JWKS endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`). No changes to `deps/auth.py`.
+- **Remove FK to auth.users** — RDS schema stores `user_id` as UUID but doesn't FK to auth.users (that lives in Supabase). Validation happens at API layer via JWT.
+- **ANY() for IN clauses** — asyncpg requires `WHERE id = ANY($1::int[])` syntax for array parameters, not `WHERE id IN (...)`.
+
+## Pitfalls
+- **datetime parsing** — Supabase exports `created_at` as ISO strings, but asyncpg expects datetime objects. Added `parse_timestamp()` helper in import script.
+- **source .env doesn't work** — The `.env` file format isn't bash-compatible. Had to export variables directly or use python-dotenv.
+- **Port confusion** — Local Postgres was on port 5433, not default 5432. Always verify with user.
+- **Missing dependencies** — Running scripts outside venv required installing asyncpg, scipy, scikit-learn globally.
+
+## What I Learned
+- **asyncpg is fast but strict** — Parameterized queries use `$1, $2, $3` syntax. Array types need explicit casting (`$1::int[]`).
+- **Migration scripts are reusable** — The export/import pattern (JSON intermediate format) works well for moving data between Postgres instances.
+- **Hybrid architecture is practical** — Keeping Supabase Auth while moving data to RDS gives flexibility without rewriting auth.
+
+## Files Changed
+- `apps/api/requirements.txt` — Added `asyncpg==0.29.0`
+- `apps/api/core/config.py` — Added `DATABASE_URL`, made Supabase keys optional
+- `apps/api/db.py` — NEW: asyncpg pool wrapper with fetch_all, fetch_one, execute helpers
+- `apps/api/main.py` — Added DB pool lifecycle in lifespan, configurable CORS
+- `apps/api/routers/bottles.py` — Migrated to asyncpg
+- `apps/api/routers/collections.py` — Migrated to asyncpg
+- `apps/api/routers/swipes.py` — Migrated to asyncpg
+- `apps/api/routers/recommendations.py` — Migrated to asyncpg
+- `apps/api/routers/swipe_candidates.py` — Migrated to asyncpg
+- `apps/api/schema.sql` — NEW: PostgreSQL schema DDL
+- `apps/api/export_from_supabase.py` — NEW: Export data to JSON
+- `apps/api/import_to_postgres.py` — NEW: Import JSON to PostgreSQL
+- `apps/api/.env` — Added DATABASE_URL for local Postgres
+
+## Data Migration Stats
+- Bottles: 24,063
+- Swipes: 412
+- Collections: 213
+
+## Next Steps
+1. Create AWS RDS instance for production
+2. Update DATABASE_URL in ECS task definition
+3. Run import script against RDS
+4. Deploy to ECS
+
+---
+
+# 2026-02-07 — Session 9: Auth Pages Redesign + Branding
+
+## Summary
+Redesigned Sign In and Sign Up pages with a two-panel luxury editorial layout. Rebranded from "FRAGRANCE" to "SNIFTR" across all navigation. Added session-aware auth behavior (no auto-redirect, sign out option).
+
+## Decisions
+- **Two-panel layout** — Created `AuthSplitLayout` component with form on left (stone-50 bg), hero on right (dark gradient). Hero hidden on mobile.
+- **No auto-redirect** — Users can access signin/signup even when authenticated. Shows banner with current session info and sign out option.
+- **Canonical /signin path** — `/login` now redirects to `/signin`. All profile icons link to `/signin`.
+- **"SNIFTR" branding** — Changed all nav bar brand names from "FRAGRANCE" to "SNIFTR" (uppercase, wide tracking).
+- **Two-tone gradient** — Hero panel uses `from-stone-700 via-stone-600 to-stone-500` with dark overlay for text contrast.
+- **20,000+ Fragrances** — Updated metrics row from 10,000+ to 20,000+.
+
+## Pitfalls
+- **Scattered navigation** — Had to update profile icon links in 9+ files (homepage, browse, finder, collection pages). No shared nav component yet.
+- **Multiple nav states in Finder** — Finder page has two nav renders (loading state and main state), both needed updating.
+- **Replace_all indentation** — Tailwind class patterns differed slightly between files, requiring file-specific edits.
+
+## What I Learned
+- **Auth UX matters** — Users need to access auth pages even when signed in (to sign out or switch accounts). Auto-redirect blocks this.
+- **Branding is pervasive** — A simple rename touched 10+ files. A shared nav component would reduce this.
+- **Gradient readability** — Lighter gradients need darker overlays for white text contrast.
+
+## Files Changed
+- `apps/web/components/auth/AuthSplitLayout.tsx` — NEW: Two-panel auth layout
+- `apps/web/app/signin/page.tsx` — NEW: Sign in with session-aware behavior
+- `apps/web/app/signup/page.tsx` — Updated with new layout + session awareness
+- `apps/web/app/login/page.tsx` — Simplified to redirect to /signin
+- `apps/web/app/forgot-password/page.tsx` — NEW: Password reset stub
+- `apps/web/app/page.tsx` — Brand → SNIFTR, profile → /signin
+- `apps/web/app/browse/page.tsx` — Brand → SNIFTR, profile → /signin
+- `apps/web/app/finder/page.tsx` — Brand → SNIFTR, profile → /signin (both nav states)
+- `apps/web/app/collection/*.tsx` — Brand → SNIFTR, login → /signin (4 files)
+- `apps/web/components/FragranceCard.tsx` — Placeholder → SNIFTR
+- `apps/web/components/FragranceDetailModal.tsx` — Placeholder → SNIFTR
+
+## Next Steps
+1. Extract shared Navigation component to reduce duplication
+2. Add password reset email flow (currently just stub page)
+3. Consider adding "Remember me" functionality with session persistence
+
+---

@@ -1,6 +1,6 @@
 # File Map — Where Things Live
 
-> Last updated: 2026-02-05 (session 6 — Framer Motion swipe animations)
+> Last updated: 2026-02-07 (session 9 — Auth Pages Redesign + Branding)
 
 ## Repository Root
 
@@ -28,8 +28,10 @@ ScentlyMax/
 | Path | File | Status |
 |------|------|--------|
 | `/` | `app/page.tsx` | **Wired to API** (editorial homepage with trending) |
-| `/login` | `app/login/page.tsx` | Auth |
-| `/signup` | `app/signup/page.tsx` | Auth |
+| `/signin` | `app/signin/page.tsx` | Auth (two-panel layout) |
+| `/signup` | `app/signup/page.tsx` | Auth (two-panel layout) |
+| `/login` | `app/login/page.tsx` | Redirect → `/signin` |
+| `/forgot-password` | `app/forgot-password/page.tsx` | Auth (password reset) |
 | `/browse` | `app/browse/page.tsx` | **Wired to API** |
 | `/finder` | `app/finder/page.tsx` | **Wired to API** (swipe MVP) |
 | `/collection` | `app/collection/page.tsx` | **Wired to API** (Profile dashboard) |
@@ -53,6 +55,7 @@ ScentlyMax/
 |------|---------|
 | `components/FragranceCard.tsx` | Reusable bottle card for grids |
 | `components/FragranceDetailModal.tsx` | Universal detail modal (full view) |
+| `components/auth/AuthSplitLayout.tsx` | Two-panel auth layout (form left, hero right) |
 
 ### Contexts
 
@@ -79,11 +82,12 @@ ScentlyMax/
 
 ## Backend: `apps/api/`
 
-### Entry Point
+### Entry Point & Database
 
 | File | Purpose |
 |------|---------|
-| `main.py` | FastAPI app, CORS, router registration, lifespan |
+| `main.py` | FastAPI app, CORS, router registration, lifespan (DB pool + ML init) |
+| `db.py` | Asyncpg connection pool wrapper (`Database` class, `db` singleton) |
 
 ### Routers
 
@@ -112,8 +116,16 @@ ScentlyMax/
 
 | File | Purpose |
 |------|---------|
-| `core/config.py` | Settings (Supabase URL, keys) |
+| `core/config.py` | Settings: `DATABASE_URL` (RDS/Postgres), `SUPABASE_URL` (auth only), `CORS_ORIGINS` |
 | `core/__init__.py` | Package init |
+
+### Migration Scripts
+
+| File | Purpose |
+|------|---------|
+| `schema.sql` | PostgreSQL schema DDL (bottles, swipes, collections tables) |
+| `export_from_supabase.py` | Export data from Supabase to JSON files |
+| `import_to_postgres.py` | Import JSON data to PostgreSQL (RDS or local) |
 
 ### ML / Intelligence
 
@@ -165,7 +177,9 @@ ScentlyMax/
 
 ### "I need to add/update navigation"
 → Navigation is duplicated in each page (no shared component yet)
+→ Brand name: "SNIFTR" (top-left, uppercase with tracking)
 → Standard 4-tab structure: `Home | Finder | Explore | Collection`
+→ Profile icon (top-right) links to `/signin`
 → Homepage nav: white text on dark hero (absolute positioned)
 → Inner pages nav: dark text on white bar (static)
 → Active tab has `underline underline-offset-4`
@@ -173,6 +187,17 @@ ScentlyMax/
 
 ### "I need to change how bottles are returned from API"
 → `apps/api/utils/bottle_normalizer.py`
+
+### "I need to change database configuration"
+→ `apps/api/core/config.py` — `DATABASE_URL` env var
+→ `apps/api/db.py` — asyncpg pool wrapper
+→ Connection string format: `postgresql://user:pass@host:port/dbname`
+
+### "I need to run raw SQL queries"
+→ Use `db.fetch_all()`, `db.fetch_one()`, `db.execute()` from `apps/api/db.py`
+→ All routers import: `from db import db`
+→ Use `$1, $2, $3` for parameterized queries (asyncpg style)
+→ Use `ANY($1::int[])` for IN clauses with arrays
 
 ### "I need to add a new API endpoint"
 → Create in `apps/api/routers/`, register in `apps/api/main.py`
@@ -208,10 +233,12 @@ ScentlyMax/
 
 ### "I need to work on the Finder/Swipe page"
 → `apps/web/app/finder/page.tsx`
-→ Uses `useReducer` state machine (v3): mode="random"|"candidates", passLifeUsed, candidateQueue
+→ Uses `useReducer` state machine (v4): mode, candidateQueue, passLifeUsed, lastLikedId, **seenIds**
 → `/bottles/random` for cold start + pass-in-random, `/swipe/candidates?seed_bottle_id=X` for personalized queue on LIKE
 → Logs swipes to `POST /swipes`, auto-favorites on Like via `POST /collections` (fire-and-forget, auth only)
 → No localStorage — all state is in-memory, resets on mount
+→ **Dedupe (v4)**: `seenIds: Record<number, true>` tracks all shown bottles; candidates filtered before use
+→ **Queue refill**: When queue < 10 in candidates mode, auto-fetches more from lastLikedId
 → **Animations**: Framer Motion (`motion`, `AnimatePresence`) for swipe exits (left=Pass, right=Like with rotation)
 → **Drag gesture**: Drag threshold 100px triggers Like/Pass via `onDragEnd` handler
 

@@ -12,3 +12,6 @@ requests==2.32.3
 scikit-learn==1.5.0
 scipy==1.13.0
 joblib==1.4.2
+
+# Database (RDS PostgreSQL)
+asyncpg==0.29.0
