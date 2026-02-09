@@ -33,18 +33,18 @@ export default function AuthSplitLayout({ mode, children }: AuthSplitLayoutProps
   return (
     <div className="min-h-screen flex">
       {/* Left Panel - Form */}
-      <div className="w-full lg:w-1/2 flex flex-col justify-center px-8 py-12 lg:px-16 xl:px-24 bg-stone-50">
+      <div className="w-full lg:w-1/2 flex flex-col justify-center px-6 sm:px-8 py-10 sm:py-12 lg:px-16 xl:px-24 bg-stone-50">
         <div className="max-w-md w-full mx-auto">
           {/* Brand */}
-          <p className="font-serif text-[18px] font-light italic text-neutral-900 mb-12">
+          <p className="font-serif text-[16px] sm:text-[18px] font-light italic text-neutral-900 mb-8 sm:mb-12">
             ScentlyMax
           </p>
 
           {/* Heading */}
-          <h1 className="font-serif text-[36px] lg:text-[42px] font-light text-neutral-900 leading-tight mb-3">
+          <h1 className="font-serif text-[28px] sm:text-[32px] lg:text-[42px] font-light text-neutral-900 leading-tight mb-2 sm:mb-3">
             {title}
           </h1>
-          <p className="text-[15px] font-light text-neutral-500 mb-10">
+          <p className="text-[14px] sm:text-[15px] font-light text-neutral-500 mb-8 sm:mb-10">
             {subtitle}
           </p>
 
@@ -52,7 +52,7 @@ export default function AuthSplitLayout({ mode, children }: AuthSplitLayoutProps
           {children}
 
           {/* Footer link */}
-          <p className="text-[14px] font-light text-neutral-500 mt-8 text-center">
+          <p className="text-[13px] sm:text-[14px] font-light text-neutral-500 mt-6 sm:mt-8 text-center">
             {footerText}{' '}
             <Link
               href={footerLinkHref}

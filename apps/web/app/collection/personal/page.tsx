@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react'
 import { apiGet, ApiError } from '@/lib/api'
 import { Fragrance } from '@/types/fragrance'
 import FragranceCard from '@/components/FragranceCard'
+import Navigation from '@/components/Navigation'
 import { useFragranceModal } from '@/contexts/FragranceModalContext'
 
 interface CollectionResponse {
@@ -45,37 +46,18 @@ export default function PersonalPage() {
 
   return (
     <div className="min-h-screen bg-stone-50">
-      {/* Navigation bar */}
-      <nav className="bg-white border-b border-neutral-200">
-        <div className="max-w-[1400px] mx-auto px-8 lg:px-14">
-          <div className="flex justify-between items-center h-[72px]">
-            <h1 className="font-serif text-[15px] font-normal text-neutral-900 tracking-[0.3em] uppercase">SNIFTR</h1>
-            <div className="flex items-center gap-10">
-              <a href="/" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Home</a>
-              <a href="/finder" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Finder</a>
-              <a href="/browse" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition">Explore</a>
-              <a href="/collection" className="text-[15px] font-light text-neutral-900 hover:text-neutral-600 transition underline underline-offset-4">Collection</a>
-            </div>
-            <a href="/signin" className="w-8 h-8 flex items-center justify-center">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
-            </a>
-          </div>
-        </div>
-      </nav>
+      <Navigation variant="solid" currentPath="/collection" />
 
-      <main className="max-w-[1400px] mx-auto px-8 lg:px-14 py-20">
+      <main className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-14 py-8 sm:py-12 lg:py-20">
         {/* Back link */}
-        <a href="/collection" className="inline-flex items-center gap-2 text-[13px] font-light text-neutral-500 hover:text-neutral-700 transition-colors mb-8">
+        <a href="/collection" className="inline-flex items-center gap-2 text-[12px] sm:text-[13px] font-light text-neutral-500 hover:text-neutral-700 transition-colors mb-6 sm:mb-8">
           ← Back to Collection
         </a>
 
         {/* Page header */}
-        <div className="mb-10">
-          <h2 className="font-serif text-[42px] font-light text-neutral-900 mb-2 leading-tight">Personal Collection</h2>
-          <p className="text-[15px] font-light text-neutral-500">
+        <div className="mb-6 sm:mb-8 lg:mb-10">
+          <h2 className="font-serif text-[28px] sm:text-[36px] lg:text-[42px] font-light text-neutral-900 mb-1 sm:mb-2 leading-tight">Personal Collection</h2>
+          <p className="text-[14px] sm:text-[15px] font-light text-neutral-500">
             Fragrances you own
           </p>
         </div>
@@ -83,11 +65,11 @@ export default function PersonalPage() {
         {/* Error state */}
         {error && (
           <div className="max-w-2xl mx-auto">
-            <div className="bg-white border border-neutral-200 p-16 text-center">
-              <p className="text-[15px] font-light text-neutral-500">{error}</p>
+            <div className="bg-white border border-neutral-200 p-8 sm:p-12 lg:p-16 text-center">
+              <p className="text-[14px] sm:text-[15px] font-light text-neutral-500">{error}</p>
               <a
                 href="/signin"
-                className="inline-block mt-6 px-8 py-3.5 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors"
+                className="inline-block mt-5 sm:mt-6 px-6 sm:px-8 py-3 sm:py-3.5 bg-neutral-900 text-white text-[14px] sm:text-[15px] font-light hover:bg-neutral-800 transition-colors"
               >
                 Log In
               </a>
@@ -97,31 +79,31 @@ export default function PersonalPage() {
 
         {/* Loading state */}
         {loading && !error && (
-          <div className="text-center py-20">
-            <p className="text-[15px] font-light text-neutral-400">Loading...</p>
+          <div className="text-center py-12 sm:py-20">
+            <p className="text-[14px] sm:text-[15px] font-light text-neutral-400">Loading...</p>
           </div>
         )}
 
         {/* Empty state */}
         {!loading && !error && bottles.length === 0 && (
           <div className="max-w-2xl mx-auto">
-            <div className="bg-white border border-neutral-200 p-16 text-center">
-              <h3 className="font-serif text-[28px] font-light text-neutral-900 mb-4 leading-tight">
+            <div className="bg-white border border-neutral-200 p-8 sm:p-12 lg:p-16 text-center">
+              <h3 className="font-serif text-[22px] sm:text-[26px] lg:text-[28px] font-light text-neutral-900 mb-3 sm:mb-4 leading-tight">
                 No Personal Collection Yet
               </h3>
-              <p className="text-[15px] font-light text-neutral-500 leading-relaxed mb-10 max-w-md mx-auto">
+              <p className="text-[14px] sm:text-[15px] font-light text-neutral-500 leading-relaxed mb-6 sm:mb-10 max-w-md mx-auto">
                 Add fragrances you own to your personal collection from the detail view
               </p>
-              <div className="flex gap-4 justify-center">
+              <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center">
                 <a
                   href="/finder"
-                  className="px-8 py-3.5 bg-neutral-900 text-white text-[15px] font-light hover:bg-neutral-800 transition-colors"
+                  className="px-6 sm:px-8 py-3 sm:py-3.5 bg-neutral-900 text-white text-[14px] sm:text-[15px] font-light hover:bg-neutral-800 transition-colors"
                 >
                   Start Finder
                 </a>
                 <a
                   href="/browse"
-                  className="px-8 py-3.5 border border-neutral-300 text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors"
+                  className="px-6 sm:px-8 py-3 sm:py-3.5 border border-neutral-300 text-[14px] sm:text-[15px] font-light text-neutral-900 hover:bg-neutral-50 transition-colors"
                 >
                   Explore
                 </a>
@@ -133,10 +115,10 @@ export default function PersonalPage() {
         {/* Grid of saved bottles */}
         {!loading && !error && bottles.length > 0 && (
           <>
-            <p className="text-[13px] font-light text-neutral-500 mb-8">
+            <p className="text-[12px] sm:text-[13px] font-light text-neutral-500 mb-6 sm:mb-8">
               {bottles.length} {bottles.length === 1 ? 'fragrance' : 'fragrances'}
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-8 gap-y-16">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-6 lg:gap-x-8 gap-y-8 sm:gap-y-12 lg:gap-y-16">
               {bottles.map((bottle) => (
                 <FragranceCard
                   key={bottle.bottle_id}

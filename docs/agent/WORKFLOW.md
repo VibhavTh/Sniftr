@@ -1,6 +1,6 @@
 # Workflow — How We Work
 
-> Last updated: 2026-02-07 (session 9 — Auth Pages Redesign + Branding)
+> Last updated: 2026-02-08 (session 10 — Public Browse + Auth Prompts)
 
 ## Session Startup Protocol
 
@@ -99,6 +99,30 @@ Auth pages (`/signin`, `/signup`, `/forgot-password`) use `AuthSplitLayout`:
 - Signing in with same email shows "already signed in" error
 - Signing up with existing email shows friendly error message
 - `/login` redirects to `/signin` for backwards compatibility
+
+### API Authentication Patterns
+
+The frontend has two types of API calls:
+
+**Public endpoints** (no auth required):
+- `GET /bottles` — Browse catalog
+- `GET /bottles/random` — Random bottles for Finder
+- `GET /bottles/{id}` — Single bottle detail
+- `GET /swipe/candidates` — ML-similar bottles
+- Use `publicApiGet()` from `@/lib/api`
+
+**Authenticated endpoints** (require login):
+- `POST /swipes` — Log swipe actions
+- `POST /collections` — Add to collection
+- `GET /collections` — Get user's collections
+- `DELETE /collections/{id}` — Remove from collection
+- Use `apiGet()`, `apiPost()`, `apiDelete()` from `@/lib/api`
+
+**Login prompts for collection actions:**
+- Modal and Finder check `isAuthenticated` before collection actions
+- Show inline login prompt with "Log In" and "Cancel" buttons
+- Use `supabase.auth.getSession()` to check auth state
+- Subscribe to `supabase.auth.onAuthStateChange()` for live updates
 
 ---
 

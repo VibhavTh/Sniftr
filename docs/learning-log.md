@@ -2050,3 +2050,80 @@ Redesigned Sign In and Sign Up pages with a two-panel luxury editorial layout. R
 3. Consider adding "Remember me" functionality with session persistence
 
 ---
+
+# 2026-02-08 — Session 10: Public Browse + Auth Prompts
+
+## Summary
+Fixed authentication requirements for browse page and added login prompts when unauthenticated users try to add fragrances to collections. Browse page now works without login. Modal and Finder show friendly login prompts for collection actions.
+
+## Decisions
+- **Public API functions** — Added `publicFetch` and `publicApiGet` to `lib/api.ts` for endpoints that don't require authentication (like `/bottles`).
+- **Browse uses publicApiGet** — Changed browse page from `apiGet` (requires auth) to `publicApiGet` (public access).
+- **Login prompts in modal** — FragranceDetailModal now checks auth state and shows inline login prompt when unauthenticated users click favorite/collection buttons.
+- **Login prompts in Finder** — Finder page shows modal overlay when unauthenticated users try to Like (button click or swipe gesture).
+- **Pass still works without auth** — On Finder, Pass action works for everyone (just cycles through fragrances). Only Like requires auth (to save favorites).
+
+## Pitfalls
+- **apiGet always required auth** — The original `apiGet` wrapper threw 401 immediately if no session existed, before even making the API call. Backend `/bottles` endpoint is public, but frontend was blocking it.
+- **Collection actions scattered** — Heart toggle is in modal, collections dropdown is in modal. Had to add auth checks in multiple places.
+- **Drag gesture auth** — Swipe-right gesture also needed auth check, not just the Like button click.
+
+## What I Learned
+- **Separate public vs authenticated API calls** — Having both `apiGet` (auth required) and `publicApiGet` (public) makes the intent clear and prevents accidental auth requirements.
+- **Auth checks at UI level** — Better UX to check auth before attempting action and show prompt, rather than attempting action and handling 401 error after.
+- **Finder state machine complexity** — The reducer-based state machine made it slightly tricky to add auth checks without disrupting the flow.
+
+## Files Changed
+- `apps/web/lib/api.ts` — Added `publicFetch()` and `publicApiGet()` functions
+- `apps/web/app/browse/page.tsx` — Changed from `apiGet` to `publicApiGet`
+- `apps/web/components/FragranceDetailModal.tsx` — Added auth checking, login prompt for collection actions
+- `apps/web/app/finder/page.tsx` — Added `showLoginPrompt` state, login prompt modal for Like action
+
+## API Patterns
+```typescript
+// Public endpoints (browse, random bottles)
+import { publicApiGet } from '@/lib/api'
+const data = await publicApiGet<BottlesResponse>('/bottles')
+
+// Authenticated endpoints (collections, swipes)
+import { apiGet, apiPost } from '@/lib/api'
+const status = await apiGet<CollectionStatus>('/collections/status')
+await apiPost('/collections', { bottle_id, collection_type })
+```
+
+## Next Steps
+1. Consider creating a shared `LoginPromptModal` component to reduce duplication
+2. Add loading states to login prompts during redirect
+3. Track "attempted action" so user can resume after login (return URL)
+
+---
+
+# 2026-02-08 — Session 11: Revert Responsive + Re-apply Auth
+
+## Summary
+Reverted responsive design changes from an incomplete session, then re-applied the auth fixes from Session 10. The codebase is now back to the Session 10 state with public browse access and login prompts for collection actions.
+
+## Decisions
+- **Full revert** — Used `git restore` to undo all responsive design changes that were in progress.
+- **Re-apply auth fixes** — Since git restore also removed auth fixes, re-applied them:
+  - Browse page uses `publicApiGet` for public access
+  - Homepage uses `publicApiGet` for trending section
+  - FragranceDetailModal checks auth and shows login prompts
+  - Finder page shows login prompt for Like actions
+
+## What I Learned
+- **Git restore is complete** — When reverting with `git restore`, it removes ALL changes since last commit, including unrelated fixes that weren't committed separately.
+- **Document before commit** — Auth fixes from Session 10 weren't committed separately, so reverting other changes required re-applying them.
+
+## Files Restored then Re-edited
+- `apps/web/app/browse/page.tsx` — Reverted, then switched to `publicApiGet`
+- `apps/web/app/page.tsx` — Reverted, then switched to `publicApiGet`
+- `apps/web/components/FragranceDetailModal.tsx` — Reverted, then added auth checks + login prompt
+- `apps/web/app/finder/page.tsx` — Reverted, then added login prompt for Like
+
+## Next Steps
+1. Commit current auth-fixed state before starting new feature work
+2. Resume responsive design work when ready
+3. Consider committing features incrementally
+
+---

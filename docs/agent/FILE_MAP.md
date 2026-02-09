@@ -1,6 +1,6 @@
 # File Map — Where Things Live
 
-> Last updated: 2026-02-07 (session 9 — Auth Pages Redesign + Branding)
+> Last updated: 2026-02-08 (session 10 — Public Browse + Auth Prompts)
 
 ## Repository Root
 
@@ -68,7 +68,7 @@ ScentlyMax/
 
 | File | Purpose |
 |------|---------|
-| `lib/api.ts` | `apiGet`, `apiPost`, `apiDelete`, `authenticatedFetch` |
+| `lib/api.ts` | `apiGet`, `apiPost`, `apiDelete` (auth required), `publicApiGet` (public) |
 | `lib/supabase.ts` | Supabase client initialization |
 | `lib/fragrance-colors.ts` | `getAccordColor`, `getNoteEmoji`, `formatDisplayText` helpers |
 
@@ -221,8 +221,9 @@ ScentlyMax/
 ### "I need to change the frontend type definition"
 → `apps/web/types/fragrance.ts`
 
-### "I need to make an authenticated API call"
-→ Use `apiGet` or `apiPost` from `apps/web/lib/api.ts`
+### "I need to make an API call"
+→ **Public endpoints** (browse, random): Use `publicApiGet` from `apps/web/lib/api.ts`
+→ **Authenticated endpoints** (collections, swipes): Use `apiGet`, `apiPost`, `apiDelete` from `apps/web/lib/api.ts`
 
 ### "I need to open the modal from anywhere"
 → `const { open } = useFragranceModal()` from `apps/web/contexts/FragranceModalContext.tsx`
@@ -241,6 +242,7 @@ ScentlyMax/
 → **Queue refill**: When queue < 10 in candidates mode, auto-fetches more from lastLikedId
 → **Animations**: Framer Motion (`motion`, `AnimatePresence`) for swipe exits (left=Pass, right=Like with rotation)
 → **Drag gesture**: Drag threshold 100px triggers Like/Pass via `onDragEnd` handler
+→ **Auth prompt**: Shows login modal when unauthenticated user tries to Like (button or swipe)
 
 ---
 
