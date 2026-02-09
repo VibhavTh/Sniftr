@@ -58,7 +58,7 @@ export default function SignUpPage() {
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/`
+        emailRedirectTo: 'https://sniftr.net/'
       }
     })
 

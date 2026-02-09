@@ -36,8 +36,6 @@ export function FragranceModalProvider({ children }: { children: ReactNode }) {
         fragrance={fragrance}
         isOpen={isOpen}
         onClose={close}
-        onLike={(id) => console.log('Like:', id)} // TODO: implement
-        onPass={(id) => console.log('Pass:', id)} // TODO: implement
       />
     </FragranceModalContext.Provider>
   )
