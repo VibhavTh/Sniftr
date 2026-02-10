@@ -1,6 +1,6 @@
 # File Map — Where Things Live
 
-> Last updated: 2026-02-08 (session 10 — Public Browse + Auth Prompts)
+> Last updated: 2026-02-10 (session 12 — Mobile-first Responsive + Deployment Fixes)
 
 ## Repository Root
 
@@ -53,8 +53,9 @@ ScentlyMax/
 
 | File | Purpose |
 |------|---------|
+| `components/Navigation.tsx` | Shared responsive navigation (transparent/solid variants) |
 | `components/FragranceCard.tsx` | Reusable bottle card for grids |
-| `components/FragranceDetailModal.tsx` | Universal detail modal (full view) |
+| `components/FragranceDetailModal.tsx` | Universal detail modal (full view, no Like/Pass on Explore) |
 | `components/auth/AuthSplitLayout.tsx` | Two-panel auth layout (form left, hero right) |
 
 ### Contexts
@@ -176,12 +177,12 @@ ScentlyMax/
 → Nav structure: `Home | Finder | Explore | Collection`
 
 ### "I need to add/update navigation"
-→ Navigation is duplicated in each page (no shared component yet)
+→ `apps/web/components/Navigation.tsx` — Shared responsive navigation component
 → Brand name: "SNIFTR" (top-left, uppercase with tracking)
 → Standard 4-tab structure: `Home | Finder | Explore | Collection`
 → Profile icon (top-right) links to `/signin`
-→ Homepage nav: white text on dark hero (absolute positioned)
-→ Inner pages nav: dark text on white bar (static)
+→ Two variants: `transparent` (white text for hero overlays) and `solid` (dark text on white bar)
+→ Mobile: hamburger menu → slide-out drawer
 → Active tab has `underline underline-offset-4`
 → Collection sub-pages also have "← Back to Collection" link
 

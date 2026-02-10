@@ -2127,3 +2127,63 @@ Reverted responsive design changes from an incomplete session, then re-applied t
 3. Consider committing features incrementally
 
 ---
+
+# 2026-02-10 — Session 12: Mobile-first Responsive + Deployment Fixes
+
+## Summary
+Implemented comprehensive mobile-first responsive design across the entire frontend. Created shared Navigation component with mobile hamburger menu. Fixed email redirect URLs for production. Added collection images to homepage. Removed non-functional filters button from browse page. Prepared static export for S3/CloudFront deployment.
+
+## Decisions
+- **Shared Navigation component** — Created `components/Navigation.tsx` with `transparent` and `solid` variants. Mobile uses hamburger menu with slide-out drawer.
+- **Mobile-first responsive breakpoints** — Used Tailwind `sm:`, `md:`, `lg:` breakpoints throughout. Base styles target mobile, breakpoints add tablet/desktop enhancements.
+- **Modal slides up on mobile** — FragranceDetailModal uses `items-end` on mobile (sheet-style) and `items-center` on desktop (centered modal).
+- **Production email redirects** — Changed `window.location.origin` to hardcoded `https://sniftr.net` for Supabase auth email redirects. Dashboard also needs URL whitelisting.
+- **No Like/Pass on Explore modal** — Removed `onLike` and `onPass` props from `FragranceModalContext` so browse page modal only shows Close and Collections.
+- **Collection images** — Added `collection-favorites.jpg`, `collection-wishlist.jpg`, `collection-personal.jpg` to replace SVG placeholders in Your Library section.
+- **Removed filters button** — Non-functional Filters button removed from browse page (search-only for now).
+
+## Pitfalls
+- **env.local had old IP** — During deployment prep, found `.env.local` contained old internal IP `10.79.159.30:8000` instead of production URL. Had to update before build.
+- **Supabase redirect whitelist** — Even with correct `emailRedirectTo` in code, Supabase dashboard needs URLs added to "Redirect URLs" in Auth settings.
+- **Navigation z-index conflicts** — Mobile drawer needed high z-index (`z-50`) and body scroll lock to work properly over page content.
+
+## What I Learned
+- **Mobile-first is cleaner** — Writing base styles for mobile, then adding desktop overrides is more natural than the reverse.
+- **Shared components reduce bugs** — Navigation was duplicated in every page; centralizing it makes updates much easier.
+- **Static export catches issues** — Running `npm run build` for static export revealed missing dependencies and type errors early.
+
+## Files Changed
+- `apps/web/components/Navigation.tsx` — NEW: Shared responsive navigation
+- `apps/web/app/page.tsx` — Uses Navigation, added collection images
+- `apps/web/app/browse/page.tsx` — Uses Navigation, removed filters button
+- `apps/web/app/finder/page.tsx` — Uses Navigation, responsive card sizing
+- `apps/web/app/collection/*.tsx` — Uses Navigation, responsive layouts (4 files)
+- `apps/web/app/signin/page.tsx` — Responsive auth layout
+- `apps/web/app/signup/page.tsx` — Responsive auth layout, production redirect
+- `apps/web/app/forgot-password/page.tsx` — Production redirect
+- `apps/web/components/FragranceCard.tsx` — Responsive text sizes, spacing
+- `apps/web/components/FragranceDetailModal.tsx` — Mobile sheet-style, responsive padding
+- `apps/web/components/auth/AuthSplitLayout.tsx` — Responsive typography
+- `apps/web/contexts/FragranceModalContext.tsx` — Removed onLike/onPass for Explore
+- `apps/web/public/collection-*.jpg` — NEW: Library section images
+
+## Deployment Notes
+
+**Static Export:**
+```bash
+cd apps/web
+rm -rf .next out
+npm run build  # Creates /out folder
+```
+
+**Environment:**
+- `.env.production`: `NEXT_PUBLIC_API_URL=https://api.sniftr.net`
+- Supabase Dashboard: Add `https://sniftr.net/` and `https://sniftr.net/reset-password` to Redirect URLs
+
+## Next Steps
+1. Upload `/out` folder to S3
+2. Invalidate CloudFront cache
+3. Test production auth flows
+4. Consider adding actual filter functionality to browse page later
+
+---

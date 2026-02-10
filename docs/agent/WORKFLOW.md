@@ -1,6 +1,6 @@
 # Workflow — How We Work
 
-> Last updated: 2026-02-08 (session 10 — Public Browse + Auth Prompts)
+> Last updated: 2026-02-10 (session 12 — Mobile-first Responsive + Deployment Fixes)
 
 ## Session Startup Protocol
 
@@ -76,13 +76,17 @@ Dynamic class strings in `lib/fragrance-colors.ts` (like `ACCORD_COLORS`) are on
 
 ### Navigation Structure
 
-All pages use a consistent 4-tab navigation: `Home | Finder | Explore | Collection`
+All pages use the shared `<Navigation />` component from `components/Navigation.tsx`:
 - **Home** → `/` (homepage)
 - **Finder** → `/finder` (swipe discovery)
 - **Explore** → `/browse` (search/browse grid)
 - **Collection** → `/collection` (user profile dashboard)
 
-The active tab is underlined. Navigation is currently duplicated in each page (no shared component).
+**Variants:**
+- `variant="transparent"` — White text, for hero overlays (homepage)
+- `variant="solid"` — Dark text on white bar (inner pages)
+
+**Mobile behavior:** Hamburger menu → slide-out drawer with close button
 
 **Brand name**: "SNIFTR" (uppercase with `tracking-[0.3em]`)
 **Profile icon**: Links to `/signin` on all pages

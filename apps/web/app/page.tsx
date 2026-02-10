@@ -239,10 +239,12 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
             {/* Favorites */}
             <div className="bg-white border border-neutral-200 overflow-hidden">
-              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300 sm:w-12 sm:h-12">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
-                </svg>
+              <div className="aspect-[16/10] bg-stone-100 overflow-hidden">
+                <img
+                  src="/collection-favorites.jpg"
+                  alt="Favorites collection"
+                  className="w-full h-full object-cover"
+                />
               </div>
               <div className="p-5 sm:p-6 lg:p-8">
                 <h3 className="font-serif text-[18px] sm:text-[20px] lg:text-[22px] font-light text-neutral-900 mb-1 sm:mb-2 leading-tight">
@@ -262,10 +264,12 @@ export default function HomePage() {
 
             {/* Wishlist */}
             <div className="bg-white border border-neutral-200 overflow-hidden">
-              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300 sm:w-12 sm:h-12">
-                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-                </svg>
+              <div className="aspect-[16/10] bg-stone-100 overflow-hidden">
+                <img
+                  src="/collection-wishlist.jpg"
+                  alt="Wishlist collection"
+                  className="w-full h-full object-cover"
+                />
               </div>
               <div className="p-5 sm:p-6 lg:p-8">
                 <h3 className="font-serif text-[18px] sm:text-[20px] lg:text-[22px] font-light text-neutral-900 mb-1 sm:mb-2 leading-tight">
@@ -285,10 +289,12 @@ export default function HomePage() {
 
             {/* Personal Collection */}
             <div className="bg-white border border-neutral-200 overflow-hidden sm:col-span-2 md:col-span-1">
-              <div className="aspect-[16/10] bg-stone-100 flex items-center justify-center">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" className="text-neutral-300 sm:w-12 sm:h-12">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                </svg>
+              <div className="aspect-[16/10] bg-stone-100 overflow-hidden">
+                <img
+                  src="/collection-personal.jpg"
+                  alt="Personal collection"
+                  className="w-full h-full object-cover"
+                />
               </div>
               <div className="p-5 sm:p-6 lg:p-8">
                 <h3 className="font-serif text-[18px] sm:text-[20px] lg:text-[22px] font-light text-neutral-900 mb-1 sm:mb-2 leading-tight">
