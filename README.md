@@ -322,7 +322,7 @@ Requires:
 | Database | PostgreSQL (AWS RDS) |
 | Auth | Supabase Auth (JWT/JWKS) |
 | ML | scikit-learn (TF-IDF), scipy (sparse matrices) |
-| Deployment | Vercel (frontend), AWS EC2 (backend), AWS RDS (database) |
+| Deployment | AWS S3 + CLOUDFRONT (frontend), AWS EC2 (backend), AWS RDS (database) |
 
 ---
 
